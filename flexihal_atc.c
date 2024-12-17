@@ -34,9 +34,12 @@
 // Used to print debug statements in the normal stream
 #define FLEXIHAL_DEBUG 1
 
+static uint8_t n_input_ports;
+static uint8_t n_output_ports;
+
 #if FLEXIHAL_DEBUG
 #define FLEXIHAL_DEBUG_PRINT(message) \
-    hal.stream.write("[R-ATC]: "); \
+    hal.stream.write("[ATC]: "); \
     hal.stream.write(message); \
     hal.stream.write(ASCII_EOL)
 #else
@@ -44,14 +47,54 @@
 #endif
 
 static const char *atc_port_names[] = {
-    "RapidChange Tool Recognition",
-    "RapidChange Dust Cover"
+    "User Input",
+    "Tool Preset",
+    "Drawbar Status",
+    "Drawbar Control",
+    "Air Seal",
+    "Taper Clear",
+    "TLO Clear",
 };
 
 typedef struct {
-    uint8_t tool_recognition;
-    uint8_t dust_cover;
+    uint8_t userinput;
+    uint8_t tool_present;
+    uint8_t drawbar_status;
+    uint8_t drawbar_control;
+    uint8_t air_seal; //air seal is always on when spindle is running.
+    uint8_t taper_clear;
+    uint8_t tlo_clear;
 } atc_ports_t;
+
+typedef union {
+    uint8_t value;
+    struct {
+        uint8_t
+        drawbar_control     :1, //1 is open, 0 is closed.
+        airseal_control     :1, //1 is on, 0 is off
+        taperclear_control  :1, 
+        tloclear_control    :1,
+        drawbar_status      :1, //1 is open, 0 is closed
+        toolpresent_status  :1, //1 is present, 0 is absent
+        userinput_status    :1, //1 is on, 0 is off
+        reserved    :1;
+    };
+} atc_status_flags_t;
+
+typedef union {
+    uint8_t value;
+    struct {
+        uint8_t
+        user_input_active   :1,
+        tool_present_active   :1,
+        drawbar_status_active   :1,
+        drawbar_control_active   :1,
+        air_seal_active   :1,
+        taper_clear_active   :1,
+        tlo_clear_active   :1,      
+        reserved        :2;
+    };
+} atc_settings_flags_t;
 
 typedef enum {
     DustCover_Disabled = 0,
@@ -72,9 +115,6 @@ typedef struct {
     float    z_traverse;
     float    z_safe_clearance;
     float    engage_feed_rate;
-    float    load_rpm;
-    float    unload_rpm;
-    uint16_t spindle_ramp_time;
     bool     tool_setter;
     float    tool_setter_x;
     float    tool_setter_y;
@@ -84,32 +124,116 @@ typedef struct {
     float    tool_setter_max_travel;
     float    tool_setter_seek_retreat;
     bool     tool_recognition;
-    uint8_t  tool_recognition_port;
-    float    tool_recognition_z_zone_1;
-    float    tool_recognition_z_zone_2;
     dust_cover_mode_t dust_cover;
     uint8_t  dust_cover_axis;
     float    dust_cover_axis_open;
     float    dust_cover_axis_close;
-    uint8_t  dust_cover_port;
+    atc_ports_t  ports;
+    atc_settings_flags_t flags;
 } atc_settings_t;
 
 static nvs_address_t nvs_address;
 static atc_settings_t atc;
+static atc_status_flags_t atc_status;
+
 static tool_data_t current_tool = {0}, *next_tool = NULL;
 static coord_data_t target = {0}, previous;
+
+static on_spindle_select_ptr on_spindle_select;
+static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
 
-static atc_ports_t ports;
 static uint8_t n_in_ports;
 static uint8_t n_out_ports;
 static char max_in_port[4] = "0";
 static char max_out_port[4] = "0";
 
+static atc_ports_t active_ports;
+
+static void handle_userinput(uint_fast16_t state);
+static void read_atc_ports(void);
+
 static const setting_group_detail_t atc_groups [] = {
-    { Group_Root, Group_UserSettings, "RapidChange ATC"}
+    { Group_Root, Group_UserSettings, "FlexiHAL ATC"}
 };
+
+ISR_CODE static void read_userinput (uint8_t irq_port, bool is_high)
+{
+    protocol_enqueue_rt_command(handle_userinput);    
+}
+
+
+static void handle_userinput(uint_fast16_t state){    
+
+    report_message("User toggle drawbar", Message_Info);
+    read_atc_ports();
+ 
+}
+
+static void read_atc_ports(void){
+        uint8_t val;
+
+    if(atc.flags.drawbar_status_active){
+        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
+        val = hal.port.wait_on_input(Port_Digital, atc.ports.drawbar_status, WaitMode_Immediate, 0.0f);//read the IO pin        
+        if(val == 1)
+            atc_status.drawbar_status = true;
+        else
+            atc_status.drawbar_status = false;
+    }
+
+    if(atc.flags.tool_present_active){
+        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
+        val = hal.port.wait_on_input(Port_Digital, atc.ports.tool_present, WaitMode_Immediate, 0.0f);//read the IO pin        
+        if(val == 1)
+            atc_status.drawbar_status = true;
+        else
+            atc_status.drawbar_status = false;
+    }
+
+    if(atc.flags.user_input_active){
+        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
+        val = hal.port.wait_on_input(Port_Digital, atc.ports.userinput, WaitMode_Immediate, 0.0f);//read the IO pin        
+        if(val == 1)
+            atc_status.userinput_status = true;
+        else
+            atc_status.userinput_status = false;
+    }        
+
+}
+
+static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rpm)
+{
+    read_atc_ports();
+    
+    //if turning the spindle on, turn on the air seal.
+    if ((state.value !=0))
+        hal.port.digital_out(atc.ports.air_seal, 1);
+    else
+        hal.port.digital_out(atc.ports.air_seal, 0);
+    
+    //If the drawbar is open or the clamp sensor or the tool sensor are not ok, don't start the spindle.
+    if((    (atc_status.drawbar_status == 0) //drawbar is sensed open
+        || (atc_status.toolpresent_status == 0) //no tool is present
+        || (atc_status.drawbar_control == 1)) //drawbar is commanded to be open
+        && (state.value !=0) ){
+        state.value = 0; //ensure spindle is off
+        hal.port.digital_out(atc.ports.air_seal, 0);//ensure air seal is off
+        grbl.enqueue_realtime_command(CMD_STOP);
+        report_message("ATC Malfunction setting spindle state!!", Message_Warning);
+    }
+
+    on_spindle_set_state(spindle, state, rpm);
+}
+
+static bool onSpindleSelect (spindle_ptrs_t *spindle)
+{   
+    on_spindle_set_state = spindle->set_state;
+    spindle->set_state = onSpindleSetState;
+
+    return on_spindle_select == NULL || on_spindle_select(spindle);
+}
 
 static uint32_t atc_get_int (setting_id_t id)
 {
@@ -164,7 +288,7 @@ static bool is_setting_available (const setting_detail_t *setting)
             available = atc.tool_setter;
             break;
         case 941:
-            available = atc.tool_recognition && ports.tool_recognition != 0xFF;
+            available = atc.tool_recognition && active_ports.tool_present != 0xFF;
             break;
         case 942:
         case 943:
@@ -175,9 +299,8 @@ static bool is_setting_available (const setting_detail_t *setting)
         case 953:
             available = atc.dust_cover == DustCover_UseAxis;
             break;
-        case 955:
-            available = atc.dust_cover == DustCover_UsePort && ports.dust_cover != 0xFF;
         default:
+            available = true;
             break;
     }
 
@@ -185,9 +308,10 @@ static bool is_setting_available (const setting_detail_t *setting)
 }
 
 static const setting_detail_t atc_settings[] = {
-    { 900, Group_UserSettings, "Alignment", "Axis", Format_RadioButtons, "X,Y", NULL, NULL, Setting_NonCore, &atc.alignment, NULL, NULL },
+    /*
+    { 900, Group_UserSettings, "Alignment", "Axis", Format_RadioButtons, "X,Y,Z,A,B", NULL, NULL, Setting_NonCore, &atc.alignment, NULL, NULL },
     { 901, Group_UserSettings, "Direction", NULL, Format_RadioButtons, "Positive,Negative", NULL, NULL, Setting_NonCore, &atc.direction, NULL, NULL },
-    { 902, Group_UserSettings, "Number of tool pockets", NULL, Format_Int8, "#00", "0", "9999", Setting_NonCore, &atc.number_of_pockets, NULL, NULL },
+    { 902, Group_UserSettings, "Number of tool pockets", NULL, Format_Int16, "#00", "0", "9999", Setting_NonCore, &atc.number_of_pockets, NULL, NULL },
     { 903, Group_UserSettings, "Pocket Offset", "mm", Format_Decimal, "###0", "0",  "9999.999", Setting_NonCore, &atc.pocket_offset, NULL, NULL },
     { 904, Group_UserSettings, "Pocket 1 X Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.x_pocket_1, NULL, NULL },
     { 905, Group_UserSettings, "Pocket 1 Y Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.y_pocket_1, NULL, NULL },
@@ -196,10 +320,7 @@ static const setting_detail_t atc_settings[] = {
     { 912, Group_UserSettings, "Pocket Z Engage", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.z_engage, NULL, NULL },
     { 913, Group_UserSettings, "Pocket Z Traverse", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.z_traverse, NULL, NULL },
     { 914, Group_UserSettings, "Pocket Z Safe Clearance", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.z_safe_clearance, NULL, NULL },
-    { 920, Group_UserSettings, "Pocket Engage Feed Rate", "mm/min", Format_Decimal, "###0", "0", "10000", Setting_NonCore, &atc.engage_feed_rate, NULL, NULL },
-    { 921, Group_UserSettings, "Pocket Load Spindle RPM", "rpm", Format_Decimal, "###0", "0", "10000", Setting_NonCore, &atc.load_rpm, NULL, NULL },
-    { 922, Group_UserSettings, "Pocket Unload Spindle RPM", "rpm", Format_Decimal, "###0", "0", "10000", Setting_NonCore, &atc.unload_rpm, NULL, NULL },
-    { 923, Group_UserSettings, "Spindle Ramp-up Wait Time", "ms", Format_Int16, "###0", "0", "60000", Setting_NonCore, &atc.spindle_ramp_time, NULL, NULL },
+
     { 930, Group_UserSettings, "Tool Setter", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_NonCore, &atc.tool_setter, NULL, NULL },
     { 931, Group_UserSettings, "Tool Setter X Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_setter_x, NULL, is_setting_available },
     { 932, Group_UserSettings, "Tool Setter Y Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_setter_y, NULL, is_setting_available },
@@ -208,7 +329,7 @@ static const setting_detail_t atc_settings[] = {
     { 935, Group_UserSettings, "Tool Setter Set Feed Rate", "mm/min", Format_Decimal, "###0", "0", "10000", Setting_NonCore, &atc.tool_setter_set_feed_rate, NULL, is_setting_available },
     { 936, Group_UserSettings, "Tool Setter Max Travel", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_setter_max_travel, NULL, is_setting_available },
     { 937, Group_UserSettings, "Tool Setter Seek Retreat", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_setter_seek_retreat, NULL, is_setting_available },
-    { 940, Group_UserSettings, "Tool Recognition", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_NonCore, &atc.tool_recognition, NULL, NULL },
+    { 940, Group_UserSettings, "Tool Recognition", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_NonCore, &atc.tool_recognition, NULL, NULL }, 
     { 941, Group_AuxPorts, "Tool Recognition Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.tool_recognition_port, NULL, is_setting_available, { .reboot_required = On } },
     { 942, Group_UserSettings, "Tool Recognition Z Zone 1", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_recognition_z_zone_1, NULL, is_setting_available },
     { 943, Group_UserSettings, "Tool Recognition Z Zone 2", "mm", Format_Decimal, "-##0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.tool_recognition_z_zone_2, NULL, is_setting_available },
@@ -216,7 +337,16 @@ static const setting_detail_t atc_settings[] = {
     { 951, Group_UserSettings, "Dust Cover Axis", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_NonCoreFn, set_dust_cover_axis_mask, atc_get_int, is_setting_available },
     { 952, Group_UserSettings, "Dust Cover Axis Open Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.dust_cover_axis_open, NULL, is_setting_available },
     { 953, Group_UserSettings, "Dust Cover Axis Close Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_NonCore, &atc.dust_cover_axis_close, NULL, is_setting_available },
-    { 955, Group_AuxPorts, "Dust Cover Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.dust_cover_port, NULL, is_setting_available, { .reboot_required = On } },
+    { 955, Group_AuxPorts, "Dust Cover Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.dust_cover_port, NULL, is_setting_available, { .reboot_required = On } },*/
+    { 954, Group_AuxPorts, "User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, is_setting_available, { .reboot_required = On } },
+    { 955, Group_AuxPorts, "Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, is_setting_available, { .reboot_required = On } },
+    { 956, Group_AuxPorts, "Drawbar Status Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.drawbar_status, NULL, is_setting_available, { .reboot_required = On } },
+    { 957, Group_AuxPorts, "Drawbar Control Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.drawbar_control, NULL, is_setting_available, { .reboot_required = On } },
+    { 958, Group_AuxPorts, "Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, is_setting_available, { .reboot_required = On } },
+    { 959, Group_AuxPorts, "Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, is_setting_available, { .reboot_required = On } },
+    { 960, Group_AuxPorts, "TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, is_setting_available, { .reboot_required = On } },
+    { 961, Group_Toolchange, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
+
 };
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
@@ -255,17 +385,38 @@ static const setting_descr_t atc_descriptions[] = {
     { 951, "Value: Axis\\n\\nThe axis which controls the dust cover." },
     { 952, "Value: Dust Cover Axis Machine Coordinate (mm)\\n\\nThe dust cover axis position referencing an open dust cover." },
     { 953, "Value: Dust Cover Axis Machine Coordinate (mm)\\n\\nThe dust cover axis position referencing a closed dust cover." },
-    { 955, "Aux output port number to use for dust cover control (High is open, low is close)." },
+
+    { 954, "Aux input port for drawbar user input" },
+    { 955, "Aux input port for tool detection" },
+    { 956, "Aux input port for drawbar status" },
+    { 957, "Aux output port for drawbar control" },
+    { 958, "Aux output port for air seal control" },
+    { 959, "Aux output port for taper clear control" },
+    { 960, "Aux output port for toolsetter clearing" },
+    { 961, "Aux input for ATC button is enabled.\\n"
+            "Aux input for tool clamp sensor is enabled.\\n"
+            "Aux input for drawbar status is enabled.\\n"
+            "Aux output for drawbar control is enabled.\\n"
+            "Aux output for air seal is enabled.\\n"    
+            "Aux output for taper clear is enabled.\\n"
+            "Aux output for toolsetter clear is enabled.\\n"                          
+            "NOTE: A hard reset of the controller is required after changing this setting."
+    },      
 };
 
 #endif
+
+static void warning_no_port (uint_fast16_t state)
+{
+    report_message("ATC plugin: configured port number is not available", Message_Warning);
+}
 
 // Hal settings API
 // Restore default settings and write to non volatile storage (NVS).
 static void atc_settings_restore (void)
 {
     memset(&atc, 0, sizeof(atc_settings_t));
-    atc.pocket_offset = 45.0f;
+/*     atc.pocket_offset = 45.0f;
     atc.x_pocket_1 = 0.0f;
     atc.y_pocket_1 = 0.0f;
     atc.z_start = 23.0f;
@@ -273,9 +424,6 @@ static void atc_settings_restore (void)
     atc.z_engage = -10.0f;
     atc.z_traverse = -10.0f;
     atc.z_safe_clearance = -10.0f;
-    atc.engage_feed_rate = 1800.0f;
-    atc.load_rpm = 1200.0f;
-    atc.unload_rpm = 1200.0f;
 
     atc.tool_setter_z_seek_start = -10.0f;
     atc.tool_setter_seek_feed_rate = DEFAULT_TOOLCHANGE_SEEK_RATE;
@@ -295,7 +443,16 @@ static void atc_settings_restore (void)
     atc.dust_cover_axis_close = -10.0f;
     if(n_out_ports) {
         atc.dust_cover_port = n_out_ports - 1;
-    }
+    } */
+
+    atc.ports.userinput = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+    atc.ports.tool_present = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
+    atc.ports.drawbar_status = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
+    atc.ports.drawbar_control = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+    atc.ports.air_seal = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+    atc.ports.taper_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+    atc.ports.tlo_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;    
+    atc.flags.value = 0;
 
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&atc, sizeof(atc_settings_t), true);
 }
@@ -312,7 +469,7 @@ static void atc_settings_load (void)
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&atc, nvs_address, sizeof(atc_settings_t), true) != NVS_TransferResult_OK)
         atc_settings_restore();
 
-    bool ok = true;
+/*     bool ok = true;
 
     ports.tool_recognition = 0xFE;
     ports.dust_cover = 0xFE;
@@ -334,7 +491,93 @@ static void atc_settings_load (void)
     }
 
     if(!ok)
-        protocol_enqueue_foreground_task(report_warning, "RapidChange: Configured port number(s) not available");
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Configured port number(s) not available"); */
+
+    // Sanity check
+    if(atc.ports.tool_present >= n_input_ports)
+        atc.ports.tool_present = n_input_ports - 1;
+
+    active_ports.tool_present = atc.ports.tool_present;        
+
+    if(atc.ports.drawbar_status >= n_input_ports)
+        atc.ports.drawbar_status = n_input_ports - 2;
+
+    active_ports.drawbar_status = atc.ports.drawbar_status;         
+
+    if(atc.ports.userinput >= n_input_ports)
+        atc.ports.userinput = n_input_ports - 3; 
+
+    active_ports.userinput = atc.ports.userinput; 
+
+    if(atc.ports.drawbar_control >= n_output_ports)
+        atc.ports.drawbar_control = n_output_ports - 1;
+    
+    active_ports.drawbar_control = atc.ports.drawbar_control;
+
+    if(atc.ports.taper_clear >= n_output_ports)
+        atc.ports.taper_clear = n_output_ports - 2;
+    
+    active_ports.taper_clear = atc.ports.taper_clear;   
+
+    if(atc.ports.air_seal >= n_output_ports)
+        atc.ports.air_seal = n_output_ports - 3;
+    
+    active_ports.air_seal = atc.ports.air_seal;  
+
+    if(atc.ports.tlo_clear >= n_output_ports)
+        atc.ports.tlo_clear = n_output_ports - 4;
+    
+    active_ports.tlo_clear = atc.ports.tlo_clear;                        
+
+    
+
+    if(atc.flags.user_input_active){
+        if(ioport_claim(Port_Digital, Port_Input, &active_ports.userinput, "ATC User Input")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+
+        //Try to register the interrupt handler.
+        if(!(hal.port.register_interrupt_handler(active_ports.userinput, IRQ_Mode_Change, read_userinput)))
+            protocol_enqueue_rt_command(warning_no_port);
+    }
+
+    if(atc.flags.tool_present_active){
+        if(ioport_claim(Port_Digital, Port_Input, &active_ports.tool_present, "Tool Present")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }
+    if(atc.flags.drawbar_status_active){
+        if(ioport_claim(Port_Digital, Port_Input, &active_ports.drawbar_status, "Drawbar Open/Closed")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }
+
+    if(atc.flags.drawbar_control_active){
+        if(ioport_claim(Port_Digital, Port_Output, &active_ports.drawbar_control, "Drawbar Control")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }
+    if(atc.flags.taper_clear_active){
+        if(ioport_claim(Port_Digital, Port_Output, &active_ports.taper_clear, "Taper Clear")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }       
+    if(atc.flags.air_seal_active){
+        if(ioport_claim(Port_Digital, Port_Output, &active_ports.air_seal, "Air Seal")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }       
+    if(atc.flags.tlo_clear_active){
+        if(ioport_claim(Port_Digital, Port_Output, &active_ports.tlo_clear, "Toolsetter Clear")) {
+        } else
+            protocol_enqueue_rt_command(warning_no_port);    
+        //Not an interrupt pin.
+    }                                         
 }
 
 static setting_details_t setting_details = {
@@ -384,7 +627,7 @@ static void report_options (bool newopt)
     on_report_options(newopt);
 
     if(!newopt) {
-        hal.stream.write("[PLUGIN: RapidChange ATC v0.01]" ASCII_EOL);
+        hal.stream.write("[PLUGIN: FlexiHAL ATC v0.01]" ASCII_EOL);
     }
 }
 
@@ -475,29 +718,8 @@ static bool linear_to_z(float position, float feed_rate) {
     return true;
 }
 
-static void spin_cw(float speed) {
-    plan_line_data_t plan_data;
-    plan_data_init(&plan_data);
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On}, speed);
-    hal.delay_ms(atc.spindle_ramp_time, NULL);
-}
-
-static void spin_ccw(float speed) {
-    plan_line_data_t plan_data;
-    plan_data_init(&plan_data);
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On, .ccw = On }, speed);
-    hal.delay_ms(atc.spindle_ramp_time, NULL);
-}
-
-static void spin_stop() {
-    plan_line_data_t plan_data;
-    plan_data_init(&plan_data);
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){0}, 0.0f);
-    hal.delay_ms(atc.spindle_ramp_time, NULL);
-}
-
 bool spindle_has_tool() {
-    return hal.port.wait_on_input(Port_Digital, ports.tool_recognition, WaitMode_Immediate, 0.0f) > 0;
+    return hal.port.wait_on_input(Port_Digital, active_ports.tool_present, WaitMode_Immediate, 0.0f) > 0;
 }
 
 static void message_start() {
@@ -523,7 +745,7 @@ static bool open_dust_cover_axis(bool open) {
 
 
 static void open_dust_cover_output(bool open) {
-    hal.port.digital_out(ports.dust_cover, open);
+    //hal.port.digital_out(ports.dust_cover, open);
     // Wait till motion completed
     hal.delay_ms(1000, NULL);
 }
@@ -557,7 +779,7 @@ void record_program_state() {
     // Save current position.
     system_convert_array_steps_to_mpos(previous.values, sys.position);
     // Establish axis assignments.
-    previous.z -= gc_get_offset(Z_AXIS);
+    previous.z -= gc_get_offset(Z_AXIS, 1);
     // Store current position as start
     memcpy(&target, &previous, sizeof(coord_data_t));
 }
@@ -565,6 +787,7 @@ void record_program_state() {
 // Restore coolant and spindle status, return controlled point to original position.
 static bool restore (void)
 {
+    #if 0
     plan_line_data_t plan_data;
 
     plan_data_init(&plan_data);
@@ -584,7 +807,7 @@ static bool restore (void)
         sync_position();
 
         coolant_sync(gc_state.modal.coolant);
-        spindle_restore(plan_data.spindle.hal, gc_state.modal.spindle.state, gc_state.spindle.rpm);
+        spindle_restore(plan_data.spindle.hal, gc_state.modal.spindle.state, gc_state.spindle->rpm);
 
         if(!settings.flags.no_restore_position_after_M6) {
             previous.z += gc_get_offset(Z_AXIS);
@@ -599,6 +822,7 @@ static bool restore (void)
     }
 
     return !ABORTED;
+    #endif
 }
 
 static bool restore_program_state (void) {
@@ -646,12 +870,13 @@ static bool unload_tool(void) {
 
         if(!rapid_to_z(atc.z_engage + atc.z_start))
             return false;
-        spin_ccw(atc.unload_rpm);
+
         if(!linear_to_z(atc.z_engage, atc.engage_feed_rate))
             return false;
 
         // If we're using tool recognition, handle it
         if(atc.tool_recognition) {
+            #if 0
             FLEXIHAL_DEBUG_PRINT("Move to recognition zone 1.");
             if(!rapid_to_z(atc.tool_recognition_z_zone_1))
                 return false;
@@ -665,6 +890,7 @@ static bool unload_tool(void) {
                     return false;
                 if(!rapid_to_z(atc.tool_recognition_z_zone_1))
                     return false;
+            
             }
 
             // Whether successful or not, we're done trying
@@ -674,7 +900,7 @@ static bool unload_tool(void) {
             if (spindle_has_tool()) {
                 if(!rapid_to_z(atc.z_safe_clearance))
                     return false;
-                protocol_enqueue_foreground_task(report_warning, "RapidChange: Failed to unload the current tool. Please unload the tool manually and cycle start to continue.");
+                protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to unload the current tool. Please unload the tool manually and cycle start to continue.");
                 pause();
             // Otherwise, get ready to unload
             } else {
@@ -687,11 +913,12 @@ static bool unload_tool(void) {
             if(!rapid_to_z(atc.z_traverse))
                 return false;
             spin_stop();
+        #endif
         }
 
     // If the tool doesn't have a pocket, let's pause for manual removal
     } else {
-        protocol_enqueue_foreground_task(report_warning, "RapidChange: Current tool does not have an assigned pocket. Please unload the tool manually and cycle start to continue.");
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Current tool does not have an assigned pocket. Please unload the tool manually and cycle start to continue.");
         pause();
     }
 
@@ -718,7 +945,6 @@ static bool load_tool(tool_id_t tool_id) {
             return false;
         if(!rapid_to_z(atc.z_engage + atc.z_start))
             return false;
-        spin_cw(atc.load_rpm);
         if(!linear_to_z(atc.z_engage, atc.engage_feed_rate))
             return false;
         if(!rapid_to_z(atc.z_engage + atc.z_retract))
@@ -728,6 +954,7 @@ static bool load_tool(tool_id_t tool_id) {
 
         // If we're using tool recognition, let's handle it
         if(atc.tool_recognition) {
+            #if 0
             FLEXIHAL_DEBUG_PRINT("Move to recognition zone 1.");
             if (!rapid_to_z(atc.tool_recognition_z_zone_1))
                 return false;
@@ -737,7 +964,7 @@ static bool load_tool(tool_id_t tool_id) {
             if (!spindle_has_tool()) {
                 if(!rapid_to_z(atc.z_safe_clearance))
                     return false;
-                protocol_enqueue_foreground_task(report_warning, "RapidChange: Failed to load the selected tool. Please load the tool manually and cycle start to continue.");
+                protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to load the selected tool. Please load the tool manually and cycle start to continue.");
                 pause();
 
             // Otherwise we have a tool and can perform the next check
@@ -750,11 +977,12 @@ static bool load_tool(tool_id_t tool_id) {
                     if(!rapid_to_z(atc.z_safe_clearance))
                         return false;
 
-                    protocol_enqueue_foreground_task(report_warning, "RapidChange: Failed to properly thread the selected tool. Please reload the tool manually and cycle start to continue.");
+                    protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to properly thread the selected tool. Please reload the tool manually and cycle start to continue.");
                     pause();
                 } // Otherwise all went well
                 FLEXIHAL_DEBUG_PRINT("Tool recognized.");
             }
+        #endif
         } else {
             if(!rapid_to_z(atc.z_traverse))
                 return false;
@@ -914,11 +1142,18 @@ static status_code_t tool_change (parser_state_t *parser_state)
     return Status_OK;
 }
 
+static void atc_reset (void)
+{
+   
+    driver_reset();
+}
+
 // Claim HAL tool change entry points and clear current tool offsets.
 void atc_init (void)
 {
-    protocol_enqueue_foreground_task(report_info, "RapidChange ATC plugin trying to initialize!");
+    protocol_enqueue_foreground_task(report_info, "FlexiHAL ATC plugin trying to initialize!");
 
+    #if 0
     ports.tool_recognition = 0xFF;
     ports.dust_cover = 0xFF;
     bool ok;
@@ -943,7 +1178,7 @@ void atc_init (void)
     }
 
     if(!ok) {
-        protocol_enqueue_foreground_task(report_warning, "RapidChange: Failed to initialize, unable to claim port for tool recognition or dust cover!");
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to initialize, unable to claim required ioports!");
         return;
     }
 
@@ -960,17 +1195,42 @@ void atc_init (void)
         FLEXIHAL_DEBUG_PRINT("Clear TLO.");
         gc_set_tool_offset(ToolLengthOffset_Cancel, 0, 0.0f);
     }
+    #endif
+
+    bool ok = (n_input_ports = ioports_available(Port_Digital, Port_Input));
+    ok = (n_output_ports = ioports_available(Port_Digital, Port_Output));
+
+    if(!ioport_can_claim_explicit()) {
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to initialize, unable to claim required ioports!");
+        return;
+    } else {
+        if((ok = (n_in_ports = ioports_available(Port_Digital, Port_Input)) >= 1))
+            strcpy(max_in_port, uitoa(n_in_ports - 1));
+        if((ok = ok && (n_out_ports = ioports_available(Port_Digital, Port_Output)) >= 1))
+            strcpy(max_out_port, uitoa(n_out_ports - 1));
+    }
+
+    if(!ok) {
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to initialize, unable to claim required ioports!");
+        return;
+    }
 
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = report_options;
 
-    hal.tool.select = tool_select;
-    hal.tool.change = tool_change;
+    on_spindle_select = grbl.on_spindle_select;
+    grbl.on_spindle_select = onSpindleSelect;
+
+    driver_reset = hal.driver_reset;
+    hal.driver_reset = atc_reset;    
+
+    //hal.tool.select = tool_select;
+    //hal.tool.change = tool_change;
 
     if((nvs_address = nvs_alloc(sizeof(atc_settings_t)))) {
         settings_register(&setting_details);
     } else {
-        protocol_enqueue_foreground_task(report_warning, "RapidChange: Failed to initialize, no NVS storage for settings!");
+        protocol_enqueue_foreground_task(report_warning, "FlexiHAL: Failed to initialize, no NVS storage for settings!");
     }
 
     if(driver_reset == NULL) {
