@@ -136,11 +136,20 @@ static on_spindle_select_ptr on_spindle_select;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
+static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
 
 static uint8_t n_in_ports;
 static uint8_t n_out_ports;
 static char max_in_port[4] = "0";
 static char max_out_port[4] = "0";
+
+static uint32_t debounce_ms = 0;
+static uint32_t polling_ms = 0;
+#define DEBOUNCE_DELAY 250
+
+static uint8_t val = 0;
+static uint8_t prev_val = 99;
+static uint8_t latch = 0;
 
 static atc_ports_t active_ports;
 
@@ -162,19 +171,17 @@ status_code_t drawbar_open (sys_state_t state, char *args)
 
     if(spindle->get_state)
         spindle_state = spindle->get_state(spindle);
-
-    spindle_state.value = 0;    
-    spindle_set_state(spindle,spindle_state, 0);
-    hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let the command propagate.
-
-    if(spindle->get_state)
-        spindle_state = spindle->get_state(spindle);
-    
+   
     //check if the spindle is running or RPM > 0
     if(spindle_state.value){
         report_message("Drawbar cannot open while spindle is running", Message_Warning);
         return Status_UserException;
     }
+
+    //Make sure the spindle is off.
+    spindle_state.value = 0;    
+    spindle_set_state(spindle,spindle_state, 0);
+    hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let the command propagate.
 
             //check that state is either IDLE or TOOL
     switch (state_get()){
@@ -227,8 +234,8 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 }
 
 const sys_command_t atc_command_list[2] = {
-    {"drawbar_open", drawbar_open, { .noargs = On }},
-	{"drawbar_close", drawbar_close, { .noargs = On }}
+    {"DRBO", drawbar_open, { .noargs = On }, { .str = "Open the drawbar" }},
+	{"DRBC", drawbar_close, { .noargs = On }, { .str = "Close the drawbar" }}
 };
 
 static sys_commands_t atc_commands = {
@@ -241,6 +248,7 @@ sys_commands_t *atc_get_commands()
     return &atc_commands;
 }
 
+#if 0
 ISR_CODE static void read_userinput (uint8_t irq_port, bool is_high)
 {
     protocol_enqueue_rt_command(handle_userinput);    
@@ -258,6 +266,30 @@ static void handle_userinput(uint_fast16_t state){
     else
         grbl.enqueue_gcode("$drawbar_close");
 
+}
+#endif
+
+
+static void atc_poll (void)
+{
+    
+    
+    uint32_t ms = hal.get_elapsed_ticks();
+    if(ms < polling_ms + 100)
+        return;
+
+    prev_val = val;
+    val = hal.port.wait_on_input(Port_Digital, atc.ports.userinput, WaitMode_Immediate, 0.0f);
+
+    if ((prev_val == 0) && (val == 0) && (latch == 0)) {
+        latch = 1;
+        grbl.enqueue_gcode("$DRBO");
+    } else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
+        latch = 0;
+        grbl.enqueue_gcode("$DRBC");  // Now only sends once when transitioning latch from 1 to 0
+    }  
+
+    polling_ms = ms;   
 }
 
 static void read_atc_ports(void){
@@ -330,6 +362,20 @@ static bool onSpindleSelect (spindle_ptrs_t *spindle)
     return on_spindle_select == NULL || on_spindle_select(spindle);
 }
 
+static void atc_poll_realtime (sys_state_t grbl_state)
+{
+    on_execute_realtime(grbl_state);
+
+    atc_poll();
+}
+
+static void atc_poll_delay (sys_state_t grbl_state)
+{
+    on_execute_delay(grbl_state);
+
+    atc_poll();
+}
+
 static const setting_detail_t atc_settings[] = {
     { 954, Group_AuxPorts, "User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, NULL, { .reboot_required = On } },
     { 955, Group_AuxPorts, "Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, NULL, { .reboot_required = On } },
@@ -339,7 +385,6 @@ static const setting_detail_t atc_settings[] = {
     { 959, Group_AuxPorts, "Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
     { 960, Group_AuxPorts, "TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
     { 961, Group_AuxPorts, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
-
 };
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
@@ -445,8 +490,8 @@ static void atc_settings_load (void)
             protocol_enqueue_rt_command(warning_no_port);    
 
         //Try to register the interrupt handler.
-        if(!(hal.port.register_interrupt_handler(active_ports.userinput, IRQ_Mode_Change, read_userinput)))
-            protocol_enqueue_rt_command(warning_no_port);
+        //if(!(hal.port.register_interrupt_handler(active_ports.userinput, IRQ_Mode_Change, read_userinput)))
+        //    protocol_enqueue_rt_command(warning_no_port);
     }
 
     if(atc.flags.tool_present_active){
@@ -579,6 +624,12 @@ void atc_init (void)
 
     atc_commands.on_get_commands = grbl.on_get_commands;
     grbl.on_get_commands = atc_get_commands;
+
+    on_execute_realtime = grbl.on_execute_realtime;
+    grbl.on_execute_realtime = atc_poll_realtime;
+
+    on_execute_delay = grbl.on_execute_delay;
+    grbl.on_execute_delay = atc_poll_delay;
 
     //hal.tool.select = tool_select;
     //hal.tool.change = tool_change;
