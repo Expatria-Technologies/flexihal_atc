@@ -191,8 +191,8 @@ status_code_t drawbar_open (sys_state_t state, char *args)
     default:
         report_message("Drawbar can only open in IDLE or TOOL state", Message_Warning);
         return Status_UserException;    
-        break;
     }
+
     //proceed to open the drawbar and turn on the taper clear.
     hal.port.digital_out(atc.ports.drawbar_control, 1);
     atc_status.drawbar_control = 1;
@@ -286,7 +286,7 @@ static void atc_poll (void)
         grbl.enqueue_gcode("$DRBO");
     } else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
         latch = 0;
-        grbl.enqueue_gcode("$DRBC");  // Now only sends once when transitioning latch from 1 to 0
+        grbl.enqueue_gcode("$DRBC");
     }  
 
     polling_ms = ms;   
