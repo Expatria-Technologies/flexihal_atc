@@ -117,6 +117,7 @@ typedef struct {
     float    tool_setter_max_travel;
     float    tool_setter_seek_retreat;
     bool     tool_recognition;
+    uint16_t drawbar_delay;
     dust_cover_mode_t dust_cover;
     uint8_t  dust_cover_axis;
     float    dust_cover_axis_open;
@@ -147,10 +148,6 @@ static uint32_t debounce_ms = 0;
 static uint32_t polling_ms = 0;
 #define DEBOUNCE_DELAY 250
 
-static uint8_t val = 0;
-static uint8_t prev_val = 99;
-static uint8_t latch = 0;
-
 static atc_ports_t active_ports;
 
 static void handle_userinput(uint_fast16_t state);
@@ -163,7 +160,7 @@ static const setting_group_detail_t atc_groups [] = {
 status_code_t drawbar_open (sys_state_t state, char *args)
 {
     spindle_ptrs_t *spindle;
-    spindle_state_t spindle_state;
+    spindle_state_t spindle_state = {0};
     
     report_message("ATC plugin: Drawbar Open", Message_Info);
 
@@ -183,7 +180,7 @@ status_code_t drawbar_open (sys_state_t state, char *args)
     spindle_set_state(spindle,spindle_state, 0);
     hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let the command propagate.
 
-            //check that state is either IDLE or TOOL
+    //check that state is either IDLE or TOOL
     switch (state_get()){
     case STATE_IDLE:
     case STATE_TOOL_CHANGE:        
@@ -194,36 +191,81 @@ status_code_t drawbar_open (sys_state_t state, char *args)
     }
 
     //proceed to open the drawbar and turn on the taper clear.
-    hal.port.digital_out(atc.ports.drawbar_control, 1);
+    if (atc.flags.drawbar_control_active)
+        hal.port.digital_out(active_ports.drawbar_control, 1);
     atc_status.drawbar_control = 1;
     //ensure taper clear is on
-    hal.port.digital_out(atc.ports.taper_clear, 1);
+    if (atc.flags.taper_clear_active)
+        hal.port.digital_out(active_ports.taper_clear, 1);
     atc_status.taperclear_control = 1;
+
+    //debounce delay
+    hal.delay_ms(atc.drawbar_delay, NULL); // Delay a bit to let the command propagate.
+
+    //check tool and drawbar sensors and stop on issue
+    read_atc_ports();
+
+    if(    ((atc_status.drawbar_status == 1)     && (atc.flags.drawbar_status_active))//drawbar is sensed closed
+        || ((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))//no tool is present
+        ){
+
+        if(atc.flags.air_seal_active)
+            hal.port.digital_out(active_ports.air_seal, 0);//ensure air seal is off
+        atc_status.airseal_control=0;
+        grbl.enqueue_realtime_command(CMD_STOP);
+        report_message("ATC Malfunction opening drawbar!!", Message_Warning);
+        return Status_UserException; 
+    }    
 
     return 0;
 }
 
 status_code_t drawbar_close (sys_state_t state, char *args)
 {
+    spindle_ptrs_t *spindle;
+    spindle_state_t spindle_state = {0};
+
+    spindle = spindle_get(0);
+
+    if(spindle->get_state)
+        spindle_state = spindle->get_state(spindle);
+   
+    //check if the spindle is running or RPM > 0
+    if(spindle_state.value){
+        return Status_UserException;
+    }        
+    
+    //check that state is either IDLE or TOOL
+    switch (state_get()){
+    case STATE_IDLE:
+    case STATE_TOOL_CHANGE:        
+        break;    
+    default:
+        return Status_UserException;    
+    }    
+    
     report_message("ATC plugin: Drawbar Close", Message_Info);
     //close the drawbar
-    hal.port.digital_out(atc.ports.drawbar_control, 0);
+    if (atc.flags.drawbar_control_active)
+        hal.port.digital_out(active_ports.drawbar_control, 0);
     atc_status.drawbar_control = 0;
     //ensure taper clear is off
-    hal.port.digital_out(atc.ports.taper_clear, 0);
+    if (atc.flags.taper_clear_active)
+        hal.port.digital_out(active_ports.taper_clear, 0);
     atc_status.taperclear_control = 0;
 
     //debounce delay
-    hal.delay_ms(350, NULL); // Delay a bit to let the command propagate.
+    hal.delay_ms(atc.drawbar_delay, NULL); // Delay a bit to let the command propagate.
 
     //check tool and drawbar sensors and stop on issue
     read_atc_ports();
 
     if(    ((atc_status.drawbar_status == 0)     && (atc.flags.drawbar_status_active))//drawbar is sensed open
         || ((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))//no tool is present
-        || (atc_status.drawbar_control == 1)){ //drawbar is commanded to be open
+        ){
 
-        hal.port.digital_out(atc.ports.air_seal, 0);//ensure air seal is off
+        if(atc.flags.air_seal_active)
+            hal.port.digital_out(active_ports.air_seal, 0);//ensure air seal is off
         atc_status.airseal_control=0;
         grbl.enqueue_realtime_command(CMD_STOP);
         report_message("ATC Malfunction closing drawbar!!", Message_Warning);
@@ -273,13 +315,20 @@ static void handle_userinput(uint_fast16_t state){
 static void atc_poll (void)
 {
     
-    
+    static uint8_t val = 0;
+    static uint8_t prev_val = 99;
+    static uint8_t latch = 0;
+
+    static uint8_t drawbar_sensor_events, tool_present_events = 0; 
+
     uint32_t ms = hal.get_elapsed_ticks();
     if(ms < polling_ms + 100)
         return;
 
+    read_atc_ports();
+
     prev_val = val;
-    val = hal.port.wait_on_input(Port_Digital, atc.ports.userinput, WaitMode_Immediate, 0.0f);
+    val = atc_status.userinput_status;
 
     if ((prev_val == 0) && (val == 0) && (latch == 0)) {
         latch = 1;
@@ -287,7 +336,9 @@ static void atc_poll (void)
     } else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
         latch = 0;
         grbl.enqueue_gcode("$DRBC");
-    }  
+    }
+
+    //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
 
     polling_ms = ms;   
 }
@@ -297,7 +348,7 @@ static void read_atc_ports(void){
 
     if(atc.flags.drawbar_status_active){
         //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, atc.ports.drawbar_status, WaitMode_Immediate, 0.0f);//read the IO pin        
+        val = hal.port.wait_on_input(Port_Digital, active_ports.drawbar_status, WaitMode_Immediate, 0.0f);//read the IO pin        
         if(val == 1)
             atc_status.drawbar_status = true;
         else
@@ -306,7 +357,7 @@ static void read_atc_ports(void){
 
     if(atc.flags.tool_present_active){
         //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, atc.ports.tool_present, WaitMode_Immediate, 0.0f);//read the IO pin        
+        val = hal.port.wait_on_input(Port_Digital, active_ports.tool_present, WaitMode_Immediate, 0.0f);//read the IO pin        
         if(val == 1)
             atc_status.drawbar_status = true;
         else
@@ -315,7 +366,7 @@ static void read_atc_ports(void){
 
     if(atc.flags.user_input_active){
         //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, atc.ports.userinput, WaitMode_Immediate, 0.0f);//read the IO pin        
+        val = hal.port.wait_on_input(Port_Digital, active_ports.userinput, WaitMode_Immediate, 0.0f);//read the IO pin        
         if(val == 1)
             atc_status.userinput_status = true;
         else
@@ -334,7 +385,7 @@ static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, f
     else
         atc_status.airseal_control=0;        
 
-    hal.port.digital_out(atc.ports.air_seal, atc_status.airseal_control);
+    hal.port.digital_out(active_ports.air_seal, atc_status.airseal_control);
     
     //If the drawbar is open or the clamp sensor or the tool sensor are not ok, don't start the spindle.
     if (state.value != 0){
@@ -344,7 +395,7 @@ static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, f
             {
             state.value = 0; //ensure spindle is off
             atc_status.airseal_control=0;
-            hal.port.digital_out(atc.ports.air_seal, atc_status.airseal_control);//ensure air seal is off
+            hal.port.digital_out(active_ports.air_seal, atc_status.airseal_control);//ensure air seal is off
             
             grbl.enqueue_realtime_command(CMD_STOP);
             report_message("ATC Malfunction setting spindle state!!", Message_Warning);
@@ -377,20 +428,22 @@ static void atc_poll_delay (sys_state_t grbl_state)
 }
 
 static const setting_detail_t atc_settings[] = {
-    { 954, Group_AuxPorts, "User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, NULL, { .reboot_required = On } },
-    { 955, Group_AuxPorts, "Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, NULL, { .reboot_required = On } },
-    { 956, Group_AuxPorts, "Drawbar Status Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.drawbar_status, NULL, NULL, { .reboot_required = On } },
-    { 957, Group_AuxPorts, "Drawbar Control Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.drawbar_control, NULL, NULL, { .reboot_required = On } },
-    { 958, Group_AuxPorts, "Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, NULL, { .reboot_required = On } },
-    { 959, Group_AuxPorts, "Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
-    { 960, Group_AuxPorts, "TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
+    { 953, Group_AuxPorts, "ATC Drawbar Delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_NonCore, &atc.drawbar_delay, NULL, NULL, },
+
+    { 954, Group_AuxPorts, "ATC User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, NULL, { .reboot_required = On } },
+    { 955, Group_AuxPorts, "ATC Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, NULL, { .reboot_required = On } },
+    { 956, Group_AuxPorts, "ATC Drawbar Status Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.drawbar_status, NULL, NULL, { .reboot_required = On } },
+    { 957, Group_AuxPorts, "ATC Drawbar Control Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.drawbar_control, NULL, NULL, { .reboot_required = On } },
+    { 958, Group_AuxPorts, "ATC Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, NULL, { .reboot_required = On } },
+    { 959, Group_AuxPorts, "ATC Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
+    { 960, Group_AuxPorts, "ATC TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
     { 961, Group_AuxPorts, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
 };
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
 
 static const setting_descr_t atc_descriptions[] = {
-
+    { 953, "Delay between operating the drawbar and reading the sensors." },
     { 954, "Aux input port for drawbar user input" },
     { 955, "Aux input port for tool detection" },
     { 956, "Aux input port for drawbar status" },
@@ -400,12 +453,11 @@ static const setting_descr_t atc_descriptions[] = {
     { 960, "Aux output port for toolsetter clearing" },
     { 961, "Aux input for ATC button is enabled.\\n"
             "Aux input for tool clamp sensor is enabled.\\n"
-            "Aux input for drawbar status is enabled.\\n"
+            "Aux input for drawbar status is enabled.\\n\\n"
             "Aux output for drawbar control is enabled.\\n"
             "Aux output for air seal is enabled.\\n"    
             "Aux output for taper clear is enabled.\\n"
-            "Aux output for toolsetter clear is enabled.\\n"                          
-            "NOTE: A hard reset of the controller is required after changing this setting."
+            "Aux output for toolsetter clear is enabled.\\n"                                      
     },      
 };
 
@@ -422,13 +474,17 @@ static void atc_settings_restore (void)
 {
     memset(&atc, 0, sizeof(atc_settings_t));
 
-    atc.ports.userinput = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+    atc.ports.userinput = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.tool_present = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.drawbar_status = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
+
     atc.ports.drawbar_control = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
     atc.ports.air_seal = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
     atc.ports.taper_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
-    atc.ports.tlo_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;    
+    atc.ports.tlo_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
+
+    atc.drawbar_delay = 352;
+
     atc.flags.value = 0;
 
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&atc, sizeof(atc_settings_t), true);
@@ -446,39 +502,17 @@ static void atc_settings_load (void)
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&atc, nvs_address, sizeof(atc_settings_t), true) != NVS_TransferResult_OK)
         atc_settings_restore();
 
-    // Sanity check
-    if(atc.ports.tool_present >= n_input_ports)
-        atc.ports.tool_present = n_input_ports - 1;
-
     active_ports.tool_present = atc.ports.tool_present;        
-
-    if(atc.ports.drawbar_status >= n_input_ports)
-        atc.ports.drawbar_status = n_input_ports - 2;
 
     active_ports.drawbar_status = atc.ports.drawbar_status;         
 
-    if(atc.ports.userinput >= n_input_ports)
-        atc.ports.userinput = n_input_ports - 3; 
-
     active_ports.userinput = atc.ports.userinput; 
-
-    if(atc.ports.drawbar_control >= n_output_ports)
-        atc.ports.drawbar_control = n_output_ports - 1;
-    
+   
     active_ports.drawbar_control = atc.ports.drawbar_control;
-
-    if(atc.ports.taper_clear >= n_output_ports)
-        atc.ports.taper_clear = n_output_ports - 2;
     
     active_ports.taper_clear = atc.ports.taper_clear;   
-
-    if(atc.ports.air_seal >= n_output_ports)
-        atc.ports.air_seal = n_output_ports - 3;
     
     active_ports.air_seal = atc.ports.air_seal;  
-
-    if(atc.ports.tlo_clear >= n_output_ports)
-        atc.ports.tlo_clear = n_output_ports - 4;
     
     active_ports.tlo_clear = atc.ports.tlo_clear;                        
 
