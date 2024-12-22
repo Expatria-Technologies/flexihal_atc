@@ -4,9 +4,7 @@ Automatic tool change plugin for [grblHal](https://www.grbl.org/what-is-grblhal)
 
 ## Todo
 
-- [ ] Add commands to clamp and unclamp
-- [ ] Setting variation tests
-- [ ] Error handling
+- [X] Add commands to clamp and unclamp the drawbar.
 - [ ] Tool setter via built-in probing functions, not new ones.
 - [ ] Ensuring correct interaction with persistent TLC
 - [ ] Tool Table support
