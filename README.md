@@ -1,6 +1,6 @@
 # flexihal_atc
 
-Automatic tool change plugin for [grblHal](https://www.grbl.org/what-is-grblhal) based on the plugin code from rcp1 and rvlotta.
+Automatic tool change plugin for GRBLHAL based on the plugin code from rcp1 and rvlotta.
 
 ## Usage
 
