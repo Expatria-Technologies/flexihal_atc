@@ -134,6 +134,7 @@ static tool_data_t current_tool = {0}, *next_tool = NULL;
 static coord_data_t target = {0}, previous;
 
 static on_spindle_select_ptr on_spindle_select;
+static on_probe_toolsetter_ptr on_probe_fixture;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
@@ -146,7 +147,6 @@ static char max_out_port[4] = "0";
 
 static uint32_t debounce_ms = 0;
 static uint32_t polling_ms = 0;
-#define DEBOUNCE_DELAY 250
 
 static atc_ports_t active_ports;
 
@@ -166,11 +166,13 @@ status_code_t drawbar_open (sys_state_t state, char *args)
 
     spindle = spindle_get(0);
 
+    spindle_data_t *spindledata = spindle->get_data(SpindleData_RPM);
+
     if(spindle->get_state)
         spindle_state = spindle->get_state(spindle);
    
     //check if the spindle is running or RPM > 0
-    if(spindle_state.value){
+    if(spindle_state.on || (spindledata->rpm > 0.0f)){
         report_message("Drawbar cannot open while spindle is running", Message_Warning);
         return Status_UserException;
     }
@@ -229,9 +231,11 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 
     if(spindle->get_state)
         spindle_state = spindle->get_state(spindle);
+
+    spindle_data_t *spindledata = spindle->get_data(SpindleData_RPM);
    
     //check if the spindle is running or RPM > 0
-    if(spindle_state.value){
+    if(spindle_state.on || (spindledata->rpm > 0.0f)){
         return Status_UserException;
     }        
     
@@ -290,34 +294,15 @@ sys_commands_t *atc_get_commands()
     return &atc_commands;
 }
 
-#if 0
-ISR_CODE static void read_userinput (uint8_t irq_port, bool is_high)
-{
-    protocol_enqueue_rt_command(handle_userinput);    
-}
-
-
-static void handle_userinput(uint_fast16_t state){    
-    
-    report_message("User toggle drawbar", Message_Info);
-    hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let the command propagate.
-    read_atc_ports();
-
-    if(atc_status.userinput_status)
-        grbl.enqueue_gcode("$drawbar_open");
-    else
-        grbl.enqueue_gcode("$drawbar_close");
-
-}
-#endif
-
-
 static void atc_poll (void)
 {
+    #define DEBOUNCE_THRESHOLD 3
     
     static uint8_t val = 0;
     static uint8_t prev_val = 99;
     static uint8_t latch = 0;
+    static int zero_count = 0;
+    static int one_count = 0;    
 
     static uint8_t drawbar_sensor_events, tool_present_events = 0; 
 
@@ -330,12 +315,34 @@ static void atc_poll (void)
     prev_val = val;
     val = atc_status.userinput_status;
 
+    if (val == 0) {
+        zero_count++;
+        one_count = 0;
+    } else {
+        one_count++;
+        zero_count = 0;
+    }
+
+    // Check for transition to active state
     if ((prev_val == 0) && (val == 0) && (latch == 0)) {
-        latch = 1;
-        grbl.enqueue_gcode("$DRBO");
-    } else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
-        latch = 0;
-        grbl.enqueue_gcode("$DRBC");
+        if (zero_count >= DEBOUNCE_THRESHOLD) {
+            latch = 1;
+            grbl.enqueue_gcode("$DRBO");
+            zero_count = 0;  // Reset counter after activation
+        }
+    }
+    // Check for transition to inactive state
+    else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
+        if (one_count >= 1) {
+            latch = 0;
+            grbl.enqueue_gcode("$DRBC");
+            one_count = 0;  // Reset counter after activation
+        }
+    }
+    // Reset counters if state is inconsistent
+    else {
+        zero_count = 0;
+        one_count = 0;
     }
 
     //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
@@ -385,7 +392,8 @@ static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, f
     else
         atc_status.airseal_control=0;        
 
-    hal.port.digital_out(active_ports.air_seal, atc_status.airseal_control);
+    if (atc.flags.air_seal_active)
+        hal.port.digital_out(active_ports.air_seal, atc_status.airseal_control);
     
     //If the drawbar is open or the clamp sensor or the tool sensor are not ok, don't start the spindle.
     if (state.value != 0){
@@ -426,6 +434,33 @@ static void atc_poll_delay (sys_state_t grbl_state)
 
     atc_poll();
 }
+
+//The grbl.on_probe_fixture event handler is called by the default tool change algorithm when probing at G59.3.
+//In addition it will be called on a "normal" probe sequence if the XY position is
+//within the radius of the G59.3 position defined below.
+// When called from "normal" probing tool is always NULL, when called from within
+// a tool change sequence (M6) then tool is a pointer to the selected tool.
+static bool probe_fixture (tool_data_t *tool, bool at_g59_3, bool on)
+{
+    bool status = true;
+
+    if(at_g59_3){ //are doing a tool change.
+        
+        report_message("ATC tool probe", Message_Info);
+
+        if (atc.flags.tlo_clear_active) {
+            hal.port.digital_out(active_ports.tlo_clear, 1);
+            hal.delay_ms(atc.drawbar_delay, NULL); // Delay a bit to let the command propagate.
+            hal.port.digital_out(active_ports.tlo_clear, 0);
+        }
+    }
+    //typedef bool (*on_probe_toolsetter_ptr)(tool_data_t *tool, coord_data_t *position, bool at_g59_3, bool on)
+    if(on_probe_fixture)
+        status = on_probe_fixture(tool, NULL, at_g59_3, on);
+
+    return status;
+}
+
 
 static const setting_detail_t atc_settings[] = {
     { 953, Group_AuxPorts, "ATC Drawbar Delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_NonCore, &atc.drawbar_delay, NULL, NULL, },
@@ -665,8 +700,8 @@ void atc_init (void)
     on_execute_delay = grbl.on_execute_delay;
     grbl.on_execute_delay = atc_poll_delay;
 
-    //hal.tool.select = tool_select;
-    //hal.tool.change = tool_change;
+    on_probe_fixture = grbl.on_probe_toolsetter;
+    grbl.on_probe_toolsetter = probe_fixture;
 
     if((nvs_address = nvs_alloc(sizeof(atc_settings_t)))) {
         settings_register(&setting_details);
