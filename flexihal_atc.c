@@ -20,6 +20,8 @@
   along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#if ATC_ENABLE == 2
+
 #include <string.h>
 #include <stdio.h>
 
@@ -30,7 +32,7 @@
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
 
-#include "flexihal_atc.h"
+//#include "flexihal_atc.h"
 
 // Used to print debug statements in the normal stream
 #define FLEXIHAL_DEBUG 1
@@ -714,3 +716,5 @@ void atc_init (void)
         hal.driver_reset = reset;
     }
 }
+
+#endif //#if ATC_ENABLE == 2
