@@ -163,11 +163,14 @@ status_code_t drawbar_open (sys_state_t state, char *args)
 {
     spindle_ptrs_t *spindle;
     spindle_state_t spindle_state = {0};
-    spindle_data_t *spindledata;
+    spindle_data_t spinddata;
+    spindle_data_t *spindledata = &spinddata;
     
     report_message("ATC plugin: Drawbar Open", Message_Info);
 
     spindle = spindle_get(0);
+    spindledata->rpm = 0.0f;
+
     if(spindle->get_data)
         spindledata = spindle->get_data(SpindleData_RPM);
 
@@ -177,7 +180,7 @@ status_code_t drawbar_open (sys_state_t state, char *args)
     //check if the spindle is running or RPM > 0
     if(spindle_state.on || (spindledata->rpm > 0.0f)){
         report_message("Drawbar cannot open while spindle is running", Message_Warning);
-        return Status_UserException;
+        return 0;
     }
 
     //Make sure the spindle is off.
@@ -192,7 +195,7 @@ status_code_t drawbar_open (sys_state_t state, char *args)
         break;    
     default:
         report_message("Drawbar can only open in IDLE or TOOL state", Message_Warning);
-        return Status_UserException;    
+        return 0;    
     }
 
     //proceed to open the drawbar and turn on the taper clear.
@@ -219,7 +222,7 @@ status_code_t drawbar_open (sys_state_t state, char *args)
         atc_status.airseal_control=0;
         grbl.enqueue_realtime_command(CMD_STOP);
         report_message("ATC Malfunction opening drawbar!!", Message_Warning);
-        return Status_UserException; 
+        return 0; 
     }    
 
     return 0;
@@ -229,17 +232,21 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 {
     spindle_ptrs_t *spindle;
     spindle_state_t spindle_state = {0};
+    spindle_data_t spinddata;
+    spindle_data_t *spindledata = &spinddata;
 
     spindle = spindle_get(0);
+    spindledata->rpm = 0.0f;
 
     if(spindle->get_state)
         spindle_state = spindle->get_state(spindle);
 
-    spindle_data_t *spindledata = spindle->get_data(SpindleData_RPM);
+    if(spindle->get_data)
+        spindledata = spindle->get_data(SpindleData_RPM);
    
     //check if the spindle is running or RPM > 0
     if(spindle_state.on || (spindledata->rpm > 0.0f)){
-        return Status_UserException;
+        return 0;
     }        
     
     //check that state is either IDLE or TOOL
@@ -248,7 +255,7 @@ status_code_t drawbar_close (sys_state_t state, char *args)
     case STATE_TOOL_CHANGE:        
         break;    
     default:
-        return Status_UserException;    
+        return 0;    
     }    
     
     report_message("ATC plugin: Drawbar Close", Message_Info);
@@ -276,7 +283,7 @@ status_code_t drawbar_close (sys_state_t state, char *args)
         atc_status.airseal_control=0;
         grbl.enqueue_realtime_command(CMD_STOP);
         report_message("ATC Malfunction closing drawbar!!", Message_Warning);
-        return Status_UserException; 
+        return 0; 
     }
 
     return 0;
