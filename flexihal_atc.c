@@ -163,12 +163,13 @@ status_code_t drawbar_open (sys_state_t state, char *args)
 {
     spindle_ptrs_t *spindle;
     spindle_state_t spindle_state = {0};
+    spindle_data_t *spindledata;
     
     report_message("ATC plugin: Drawbar Open", Message_Info);
 
     spindle = spindle_get(0);
-
-    spindle_data_t *spindledata = spindle->get_data(SpindleData_RPM);
+    if(spindle->get_data)
+        spindledata = spindle->get_data(SpindleData_RPM);
 
     if(spindle->get_state)
         spindle_state = spindle->get_state(spindle);
@@ -296,7 +297,7 @@ sys_commands_t *atc_get_commands()
     return &atc_commands;
 }
 
-static void atc_poll (void)
+static void atc_poll (void *data)
 {
     #define DEBOUNCE_THRESHOLD 3
     
@@ -308,9 +309,9 @@ static void atc_poll (void)
 
     static uint8_t drawbar_sensor_events, tool_present_events = 0; 
 
-    uint32_t ms = hal.get_elapsed_ticks();
-    if(ms < polling_ms + 100)
-        return;
+    //uint32_t ms = hal.get_elapsed_ticks();
+    //if(ms < polling_ms + 100)
+    //    return;
 
     read_atc_ports();
 
@@ -349,7 +350,9 @@ static void atc_poll (void)
 
     //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
 
-    polling_ms = ms;   
+    //polling_ms = ms;
+    //task_delete(atc_poll, NULL);
+    task_add_delayed(atc_poll, NULL, 100); 
 }
 
 static void read_atc_ports(void){
@@ -423,6 +426,7 @@ static bool onSpindleSelect (spindle_ptrs_t *spindle)
     return on_spindle_select == NULL || on_spindle_select(spindle);
 }
 
+#if 0
 static void atc_poll_realtime (sys_state_t grbl_state)
 {
     on_execute_realtime(grbl_state);
@@ -436,13 +440,14 @@ static void atc_poll_delay (sys_state_t grbl_state)
 
     atc_poll();
 }
+#endif
 
 //The grbl.on_probe_fixture event handler is called by the default tool change algorithm when probing at G59.3.
 //In addition it will be called on a "normal" probe sequence if the XY position is
 //within the radius of the G59.3 position defined below.
 // When called from "normal" probing tool is always NULL, when called from within
 // a tool change sequence (M6) then tool is a pointer to the selected tool.
-static bool probe_fixture (tool_data_t *tool, bool at_g59_3, bool on)
+static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g59_3, bool on)
 {
     bool status = true;
 
@@ -456,9 +461,9 @@ static bool probe_fixture (tool_data_t *tool, bool at_g59_3, bool on)
             hal.port.digital_out(active_ports.tlo_clear, 0);
         }
     }
-    //typedef bool (*on_probe_toolsetter_ptr)(tool_data_t *tool, coord_data_t *position, bool at_g59_3, bool on)
+
     if(on_probe_fixture)
-        status = on_probe_fixture(tool, NULL, at_g59_3, on);
+        status = on_probe_fixture(tool, position, at_g59_3, on);
 
     return status;
 }
@@ -693,14 +698,18 @@ void atc_init (void)
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;    
 
-    atc_commands.on_get_commands = grbl.on_get_commands;
-    grbl.on_get_commands = atc_get_commands;
+    //atc_commands.on_get_commands = grbl.on_get_commands;
+    //grbl.on_get_commands = atc_get_commands;
 
-    on_execute_realtime = grbl.on_execute_realtime;
+    system_register_commands(&atc_commands);
+
+    /*on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = atc_poll_realtime;
 
     on_execute_delay = grbl.on_execute_delay;
-    grbl.on_execute_delay = atc_poll_delay;
+    grbl.on_execute_delay = atc_poll_delay;*/
+
+    task_add_delayed(atc_poll, NULL, 1000);
 
     on_probe_fixture = grbl.on_probe_toolsetter;
     grbl.on_probe_toolsetter = probe_fixture;
