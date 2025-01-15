@@ -307,6 +307,7 @@ sys_commands_t *atc_get_commands()
 static void atc_poll (void *data)
 {
     #define DEBOUNCE_THRESHOLD 3
+    #define ZERO_THRESHOLD 10
     
     static uint8_t val = 0;
     static uint8_t prev_val = 99;
@@ -342,11 +343,13 @@ static void atc_poll (void *data)
         }
     }
     // Check for transition to inactive state
-    else if ((prev_val == 1) && (val == 1) && (latch == 1)) {
-        if (one_count >= 1) {
+    else if (((prev_val == 1) && (val == 1) && (latch == 1)) || 
+             (zero_count >= ZERO_THRESHOLD)) {  // Added condition for 10 consecutive zeros
+        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {  // Modified condition
             latch = 0;
             grbl.enqueue_gcode("$DRBC");
             one_count = 0;  // Reset counter after activation
+            zero_count = 0;  // Also reset zero counter
         }
     }
     // Reset counters if state is inconsistent
@@ -358,7 +361,7 @@ static void atc_poll (void *data)
     //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
 
     //polling_ms = ms;
-    //task_delete(atc_poll, NULL);
+    task_delete(atc_poll, NULL);
     task_add_delayed(atc_poll, NULL, 100); 
 }
 
