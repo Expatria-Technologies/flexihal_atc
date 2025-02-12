@@ -414,7 +414,7 @@ static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, f
     if (state.value != 0){
         if(    ((atc_status.drawbar_status == 0)     && (atc.flags.drawbar_status_active))//drawbar is sensed open
             || ((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))//no tool is present
-            || (atc_status.drawbar_control == 1)) //drawbar is commanded to be open
+            || (atc_status.drawbar_control == 1) && (atc.flags.drawbar_control_active)) //drawbar is commanded to be open
             {
             state.value = 0; //ensure spindle is off
             atc_status.airseal_control=0;
