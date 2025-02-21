@@ -461,7 +461,7 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 {
     bool status = true;
 
-    if(at_g59_3){ //are doing a tool change.
+    if(at_g59_3 && on){ //are doing a tool change.
         
         report_message("ATC tool probe", Message_Info);
 
