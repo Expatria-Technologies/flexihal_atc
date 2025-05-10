@@ -133,26 +133,26 @@ static atc_settings_t atc;
 static atc_status_flags_t atc_status;
 
 static tool_data_t current_tool = {0}, *next_tool = NULL;
-static coord_data_t target = {0}, previous;
+//static coord_data_t target = {0}, previous;
 
 static on_spindle_select_ptr on_spindle_select;
 static on_probe_toolsetter_ptr on_probe_fixture;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
-static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
+//static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
 
 static uint8_t n_in_ports;
 static uint8_t n_out_ports;
 static char max_in_port[4] = "0";
 static char max_out_port[4] = "0";
 
-static uint32_t debounce_ms = 0;
-static uint32_t polling_ms = 0;
+//static uint32_t debounce_ms = 0;
+//static uint32_t polling_ms = 0;
 
 static atc_ports_t active_ports;
 
-static void handle_userinput(uint_fast16_t state);
+//static void handle_userinput(uint_fast16_t state);
 static void read_atc_ports(void);
 
 static const setting_group_detail_t atc_groups [] = {
@@ -315,7 +315,7 @@ static void atc_poll (void *data)
     static int zero_count = 0;
     static int one_count = 0;    
 
-    static uint8_t drawbar_sensor_events, tool_present_events = 0; 
+    //static uint8_t drawbar_sensor_events, tool_present_events = 0; 
 
     //uint32_t ms = hal.get_elapsed_ticks();
     //if(ms < polling_ms + 100)
@@ -515,7 +515,7 @@ static const setting_descr_t atc_descriptions[] = {
 
 #endif
 
-static void warning_no_port (uint_fast16_t state)
+static void warning_no_port (void *data)
 {
     report_message("ATC plugin: configured port number is not available", Message_Warning);
 }
@@ -573,48 +573,48 @@ static void atc_settings_load (void)
     if(atc.flags.user_input_active){
         if(ioport_claim(Port_Digital, Port_Input, &active_ports.userinput, "ATC User Input")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
 
         //Try to register the interrupt handler.
         //if(!(hal.port.register_interrupt_handler(active_ports.userinput, IRQ_Mode_Change, read_userinput)))
-        //    protocol_enqueue_rt_command(warning_no_port);
+        //    task_add_immediate(warning_no_port, NULL);
     }
 
     if(atc.flags.tool_present_active){
         if(ioport_claim(Port_Digital, Port_Input, &active_ports.tool_present, "Tool Present")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }
     if(atc.flags.drawbar_status_active){
         if(ioport_claim(Port_Digital, Port_Input, &active_ports.drawbar_status, "Drawbar Open/Closed")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }
 
     if(atc.flags.drawbar_control_active){
         if(ioport_claim(Port_Digital, Port_Output, &active_ports.drawbar_control, "Drawbar Control")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }
     if(atc.flags.taper_clear_active){
         if(ioport_claim(Port_Digital, Port_Output, &active_ports.taper_clear, "Taper Clear")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }       
     if(atc.flags.air_seal_active){
         if(ioport_claim(Port_Digital, Port_Output, &active_ports.air_seal, "Air Seal")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }       
     if(atc.flags.tlo_clear_active){
         if(ioport_claim(Port_Digital, Port_Output, &active_ports.tlo_clear, "Toolsetter Clear")) {
         } else
-            protocol_enqueue_rt_command(warning_no_port);    
+            task_add_immediate(warning_no_port, NULL);    
         //Not an interrupt pin.
     }                                         
 }
