@@ -646,7 +646,7 @@ static void reset (void)
                 memcpy(gc_state.tool, &current_tool, sizeof(tool_data_t));
             else
                 memcpy(next_tool, &current_tool, sizeof(tool_data_t));
-            system_add_rt_report(Report_Tool);
+            report_add_realtime(Report_Tool);
         }
         char tool_msg[20];
         sprintf(tool_msg, "Current tool: %lu", current_tool.tool_id);
