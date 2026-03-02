@@ -298,18 +298,27 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         return Status_InvalidStatement;
     }
 
-    // Parse tool number from args (expect "Tn")
-    if(!args || (*args != 'T' && *args != 't')) {
-        report_message("TCADD: usage is $TCADD Tn", Message_Warning);
-        return Status_BadNumberFormat;
-    }
-
-    uint8_t cc = 1;
+    // Parse tool number from args (expect "Tn").
+    // If no argument is given, default to the tool currently in the spindle.
     uint32_t tool_id;
-    status_code_t parse_status = read_uint(args, &cc, &tool_id);
-    if(parse_status != Status_OK) {
-        report_message("TCADD: invalid tool number", Message_Warning);
-        return parse_status;
+
+    if(!args || !*args) {
+        tool_id = (uint32_t)gc_state.tool->tool_id;
+        if(tool_id == 0) {
+            report_message("TCADD: no tool selected and no argument given", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+    } else {
+        if(*args != 'T' && *args != 't') {
+            report_message("TCADD: usage is $TCADD Tn  (or $TCADD to use current tool)", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        uint8_t cc = 1;
+        status_code_t parse_status = read_uint(args, &cc, &tool_id);
+        if(parse_status != Status_OK) {
+            report_message("TCADD: invalid tool number", Message_Warning);
+            return parse_status;
+        }
     }
 
     // Optional: check that a tool is physically present in the spindle
