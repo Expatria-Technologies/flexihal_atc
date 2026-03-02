@@ -916,6 +916,8 @@ static void atc_settings_load (void)
     if (settings.tool_change.mode != ToolChange_Automatic)
         return;  
 
+    settings.macro_atc_flags.random_toolchanger = 1;
+    
     on_tool_change = hal.tool.change;
     hal.tool.change = tool_change;    
 }

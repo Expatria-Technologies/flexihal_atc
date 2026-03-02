@@ -389,6 +389,12 @@ static status_code_t load_tools (sys_state_t state, char *args)
 
                        while(param && status == Status_OK) {
 
+                           // Skip empty tokens produced by multiple consecutive spaces
+                           if(*param == '\0') {
+                               param = strtok(NULL, " ");
+                               continue;
+                           }
+
                            cc = 1;
 
                            switch(CAPS(*param)) {
@@ -636,7 +642,9 @@ static status_code_t list_tools (sys_state_t state, char *args)
 
         const tool_pocket_t *p = &pockets[idx];
 
-        if(p->tool.tool_id < 0)
+        // Skip uninitialized slots (tool_id == 0 from memset) and
+        // explicitly empty slots (tool_id == -1)
+        if(p->tool.tool_id <= 0)
             continue;
 
         any = true;
@@ -646,7 +654,7 @@ static status_code_t list_tools (sys_state_t state, char *args)
         sprintf(buf, "[TOOL: P%u T%u", file_pocket, (uint16_t)p->tool.tool_id);
 
         for(axis = 0; axis < N_AXIS; axis++) {
-            if(p->tool.offset.values[axis] != 0.0f) {
+            if(fabsf(p->tool.offset.values[axis]) > 0.0001f) {
                 sprintf(tmp, " %s%.3f", axis_letter[axis], p->tool.offset.values[axis]);
                 strcat(buf, tmp);
             }
