@@ -32,6 +32,10 @@
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
 
+#if TOOLTABLE_ENABLE == 2
+#include "tooltable.h"
+#endif
+
 //#include "flexihal_atc.h"
 
 // Used to print debug statements in the normal stream
@@ -98,32 +102,7 @@ typedef enum {
 } dust_cover_mode_t;
 
 typedef struct {
-    char     alignment;
-    char     direction;
-    uint8_t  number_of_pockets;
-    float    pocket_offset;
-    float    x_pocket_1;
-    float    y_pocket_1;
-    float    z_start;
-    float    z_retract;
-    float    z_engage;
-    float    z_traverse;
-    float    z_safe_clearance;
-    float    engage_feed_rate;
-    bool     tool_setter;
-    float    tool_setter_x;
-    float    tool_setter_y;
-    float    tool_setter_z_seek_start;
-    float    tool_setter_seek_feed_rate;
-    float    tool_setter_set_feed_rate;
-    float    tool_setter_max_travel;
-    float    tool_setter_seek_retreat;
-    bool     tool_recognition;
     uint16_t drawbar_delay;
-    dust_cover_mode_t dust_cover;
-    uint8_t  dust_cover_axis;
-    float    dust_cover_axis_open;
-    float    dust_cover_axis_close;
     atc_ports_t  ports;
     atc_settings_flags_t flags;
 } atc_settings_t;
@@ -140,6 +119,7 @@ static on_probe_toolsetter_ptr on_probe_fixture;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
+static tool_change_ptr on_tool_change = NULL;
 //static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
 
 static uint8_t n_in_ports;
@@ -289,9 +269,256 @@ status_code_t drawbar_close (sys_state_t state, char *args)
     return 0;
 }
 
-const sys_command_t atc_command_list[2] = {
-    {"DRBO", drawbar_open, { .noargs = On }, { .str = "Open the drawbar" }},
-	{"DRBC", drawbar_close, { .noargs = On }, { .str = "Close the drawbar" }}
+// ---------------------------------------------------------------------------
+// Carousel management commands
+// ---------------------------------------------------------------------------
+
+// $TCADD Tn  — Add the tool currently in the spindle to a free carousel pocket.
+//
+// Usage:
+//   $TCADD T3    register tool 3 in the next free pocket
+//
+// The machine must be IDLE and a tool must be present in the spindle.
+// The tooltable plugin assigns the pocket number automatically.
+
+static status_code_t carousel_add (sys_state_t state, char *args)
+{
+#if TOOLTABLE_ENABLE != 2
+    report_message("TCADD requires TOOLTABLE_ENABLE=2", Message_Warning);
+    return Status_InvalidStatement;
+#else
+    // Must be idle
+    if(state_get() != STATE_IDLE) {
+        report_message("TCADD: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    // Parse tool number from args (expect "Tn")
+    if(!args || (*args != 'T' && *args != 't')) {
+        report_message("TCADD: usage is $TCADD Tn", Message_Warning);
+        return Status_BadNumberFormat;
+    }
+
+    uint8_t cc = 1;
+    uint32_t tool_id;
+    status_code_t parse_status = read_uint(args, &cc, &tool_id);
+    if(parse_status != Status_OK) {
+        report_message("TCADD: invalid tool number", Message_Warning);
+        return parse_status;
+    }
+
+    // Optional: check that a tool is physically present in the spindle
+    if(atc.flags.tool_present_active) {
+        read_atc_ports();
+        if(!atc_status.toolpresent_status) {
+            report_message("TCADD: no tool detected in spindle", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+        }
+    }
+
+    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id);
+
+    switch(result) {
+        case CarouselOp_OK:
+            {
+                char msg[60];
+                sprintf(msg, "Tool %lu added to carousel (offsets preserved)", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_ToolAlreadyInPocket:
+            report_message("TCADD: tool already has a pocket assigned", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_NoPocketAvailable:
+            report_message("TCADD: carousel is full, no free pocket", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_TableNotLoaded:
+            report_message("TCADD: tool table not loaded", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_WriteError:
+            report_message("TCADD: failed to write tool table", Message_Warning);
+            return Status_FileReadError;
+
+        default:
+            report_message("TCADD: unknown error", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+    }
+#endif
+}
+
+// $TCRM Tn  — Remove a tool from the carousel (mark its pocket as empty).
+//
+// Usage:
+//   $TCRM T3    remove tool 3 from its carousel pocket
+//
+// The machine must be IDLE.
+
+static status_code_t carousel_remove (sys_state_t state, char *args)
+{
+#if TOOLTABLE_ENABLE != 2
+    report_message("TCRM requires TOOLTABLE_ENABLE=2", Message_Warning);
+    return Status_GcodeUnsupportedCommand;
+#else
+    // Must be idle
+    if(state_get() != STATE_IDLE) {
+        report_message("TCRM: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    // Parse tool number from args (expect "Tn")
+    if(!args || (*args != 'T' && *args != 't')) {
+        report_message("TCRM: usage is $TCRM Tn", Message_Warning);
+        return Status_BadNumberFormat;
+    }
+
+    uint8_t cc = 1;
+    uint32_t tool_id;
+    status_code_t parse_status = read_uint(args, &cc, &tool_id);
+    if(parse_status != Status_OK) {
+        report_message("TCRM: invalid tool number", Message_Warning);
+        return parse_status;
+    }
+
+    carousel_op_result_t result = tooltable_carousel_remove((tool_id_t)tool_id);
+
+    switch(result) {
+        case CarouselOp_OK:
+            {
+                char msg[40];
+                sprintf(msg, "Tool %lu removed from carousel", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_ToolNotFound:
+            report_message("TCRM: tool not found in carousel", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_TableNotLoaded:
+            report_message("TCRM: tool table not loaded", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_WriteError:
+            report_message("TCRM: failed to write tool table", Message_Warning);
+            return Status_FileReadError;
+
+        default:
+            report_message("TCRM: unknown error", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// hal.tool.change — called by grblHAL when M6 is parsed
+//
+// Decision tree:
+//
+//   Requested tool in carousel?
+//   ├── YES → enqueue carousel ATC macro; returning tool re-pocketed in onToolChanged
+//   └── NO  → outgoing tool in carousel?
+//             ├── YES → enqueue "return current tool then pause" macro
+//             └── NO  → enqueue "just pause for manual swap" macro
+//
+// In all cases the actual pocket-table updates happen in tooltable.c's
+// onToolChanged() after the macro completes, using state set via
+// tooltable_set_m6_prev().
+// ---------------------------------------------------------------------------
+
+#if TOOLTABLE_ENABLE == 2
+
+// Query the tooltable for a tool's current carousel pocket (-1 = not in carousel)
+static pocket_id_t get_carousel_pocket (tool_id_t tool_id)
+{
+    if(!grbl.tool_table.n_tools || !grbl.tool_table.get_tool)
+        return -1;
+
+    tool_table_entry_t *entry = grbl.tool_table.get_tool(tool_id);
+    if(!entry || !entry->data)
+        return -1;
+
+    return (pocket_id_t)entry->pocket;
+}
+
+#endif // TOOLTABLE_ENABLE
+
+static status_code_t tool_change (parser_state_t *parser_state)
+{
+    tool_data_t *current  = parser_state->tool;
+
+#if TOOLTABLE_ENABLE == 2
+    // tool_pending is the tool ID requested by the Tn word before M6
+    tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(parser_state->tool_pending);
+    if(!incoming_entry || !incoming_entry->data)
+        return on_tool_change ? on_tool_change(parser_state) : Status_OK;
+
+    tool_data_t *incoming = incoming_entry->data;
+
+    if(incoming->tool_id == current->tool_id)
+        return Status_OK; // already have the right tool
+
+    next_tool = incoming;
+    memcpy(&current_tool, current, sizeof(tool_data_t));
+
+    // entry->pocket holds the carousel pocket, or -1 if not in carousel
+    pocket_id_t incoming_pocket = (pocket_id_t)incoming_entry->pocket;
+    pocket_id_t outgoing_pocket = get_carousel_pocket(current->tool_id);
+
+    // Tell tooltable.c about the outgoing tool so onToolChanged() can
+    // return it to the correct carousel pocket on completion.
+    if(outgoing_pocket >= 1)
+        tooltable_set_m6_prev(M6Origin_Carousel, outgoing_pocket);
+    else
+        tooltable_set_m6_prev(M6Origin_Manual, -1);
+
+    if(incoming_pocket >= 1) {
+        // ── PATH A: requested tool is in the carousel ──────────────────────
+        FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running ATC macro");
+        char macro[48];
+        sprintf(macro, "/linuxcnc/atc_change.ngc T%u P%u",
+                (unsigned)incoming->tool_id, (unsigned)incoming_pocket);
+        grbl.enqueue_gcode(macro);
+
+    } else {
+        // ── PATH B: requested tool is NOT in the carousel ──────────────────
+        if(outgoing_pocket >= 1) {
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, returning current tool then pausing");
+            char macro[48];
+            sprintf(macro, "/linuxcnc/atc_return.ngc P%u", (unsigned)outgoing_pocket);
+            grbl.enqueue_gcode(macro);
+        } else {
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, no return needed, pausing for swap");
+        }
+
+        grbl.enqueue_gcode("/linuxcnc/atc_pause.ngc");
+        system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    }
+
+#else
+    // No tooltable — always fall back to a simple pause for manual swap
+    next_tool = NULL; // can't resolve tool data without tooltable
+    memcpy(&current_tool, current, sizeof(tool_data_t));
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+#endif
+
+    if(on_tool_change)
+        return on_tool_change(parser_state);
+
+    return Status_OK;
+}
+// ---------------------------------------------------------------------------
+// Command table
+// ---------------------------------------------------------------------------
+
+const sys_command_t atc_command_list[] = {
+    {"DRBO",  drawbar_open,    { .noargs = On }, { .str = "Open the drawbar" }},
+    {"DRBC",  drawbar_close,   { .noargs = On }, { .str = "Close the drawbar" }},
+    {"TCADD", carousel_add,    { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
+    {"TCRM",  carousel_remove, { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
 };
 
 static sys_commands_t atc_commands = {
@@ -315,12 +542,6 @@ static void atc_poll (void *data)
     static int zero_count = 0;
     static int one_count = 0;    
 
-    //static uint8_t drawbar_sensor_events, tool_present_events = 0; 
-
-    //uint32_t ms = hal.get_elapsed_ticks();
-    //if(ms < polling_ms + 100)
-    //    return;
-
     read_atc_ports();
 
     prev_val = val;
@@ -339,62 +560,47 @@ static void atc_poll (void *data)
         if (zero_count >= DEBOUNCE_THRESHOLD) {
             latch = 1;
             grbl.enqueue_gcode("$DRBO");
-            zero_count = 0;  // Reset counter after activation
+            zero_count = 0;
         }
     }
     // Check for transition to inactive state
     else if (((prev_val == 1) && (val == 1) && (latch == 1)) || 
-             (zero_count >= ZERO_THRESHOLD)) {  // Added condition for 10 consecutive zeros
-        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {  // Modified condition
+             (zero_count >= ZERO_THRESHOLD)) {
+        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {
             latch = 0;
             grbl.enqueue_gcode("$DRBC");
-            one_count = 0;  // Reset counter after activation
-            zero_count = 0;  // Also reset zero counter
+            one_count = 0;
+            zero_count = 0;
         }
     }
-    // Reset counters if state is inconsistent
     else {
         zero_count = 0;
         one_count = 0;
     }
 
-    //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
-
-    //polling_ms = ms;
     task_delete(atc_poll, NULL);
     task_add_delayed(atc_poll, NULL, 100); 
 }
 
-static void read_atc_ports(void){
-        uint8_t val;
+static void read_atc_ports(void)
+{
+    uint8_t val;
 
-    if(atc.flags.drawbar_status_active){
-        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, active_ports.drawbar_status, WaitMode_Immediate, 0.0f);//read the IO pin        
-        if(val == 1)
-            atc_status.drawbar_status = true;
-        else
-            atc_status.drawbar_status = false;
+    if(atc.flags.drawbar_status_active) {
+        val = hal.port.wait_on_input(Port_Digital, active_ports.drawbar_status, WaitMode_Immediate, 0.0f);
+        atc_status.drawbar_status = (val == 1);
     }
 
-    if(atc.flags.tool_present_active){
-        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, active_ports.tool_present, WaitMode_Immediate, 0.0f);//read the IO pin        
-        if(val == 1)
-            atc_status.drawbar_status = true;
-        else
-            atc_status.drawbar_status = false;
+    if(atc.flags.tool_present_active) {
+        val = hal.port.wait_on_input(Port_Digital, active_ports.tool_present, WaitMode_Immediate, 0.0f);
+        // BUG FIX: was incorrectly writing to drawbar_status instead of toolpresent_status
+        atc_status.toolpresent_status = (val == 1);
     }
 
-    if(atc.flags.user_input_active){
-        //hal.delay_ms(RELAY_DEBOUNCE, NULL); // Delay a bit to let any contact bounce settle.
-        val = hal.port.wait_on_input(Port_Digital, active_ports.userinput, WaitMode_Immediate, 0.0f);//read the IO pin        
-        if(val == 1)
-            atc_status.userinput_status = true;
-        else
-            atc_status.userinput_status = false;
-    }        
-
+    if(atc.flags.user_input_active) {
+        val = hal.port.wait_on_input(Port_Digital, active_ports.userinput, WaitMode_Immediate, 0.0f);
+        atc_status.userinput_status = (val == 1);
+    }
 }
 
 static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rpm)
@@ -436,38 +642,18 @@ static bool onSpindleSelect (spindle_ptrs_t *spindle)
     return on_spindle_select == NULL || on_spindle_select(spindle);
 }
 
-#if 0
-static void atc_poll_realtime (sys_state_t grbl_state)
-{
-    on_execute_realtime(grbl_state);
-
-    atc_poll();
-}
-
-static void atc_poll_delay (sys_state_t grbl_state)
-{
-    on_execute_delay(grbl_state);
-
-    atc_poll();
-}
-#endif
-
 //The grbl.on_probe_fixture event handler is called by the default tool change algorithm when probing at G59.3.
-//In addition it will be called on a "normal" probe sequence if the XY position is
-//within the radius of the G59.3 position defined below.
-// When called from "normal" probing tool is always NULL, when called from within
-// a tool change sequence (M6) then tool is a pointer to the selected tool.
 static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g59_3, bool on)
 {
     bool status = true;
 
-    if(at_g59_3 && on){ //are doing a tool change.
+    if(at_g59_3 && on){
         
         report_message("ATC tool probe", Message_Info);
 
         if (atc.flags.tlo_clear_active) {
             hal.port.digital_out(active_ports.tlo_clear, 1);
-            hal.delay_ms(atc.drawbar_delay, NULL); // Delay a bit to let the command propagate.
+            hal.delay_ms(atc.drawbar_delay, NULL);
             hal.port.digital_out(active_ports.tlo_clear, 0);
         }
     }
@@ -520,8 +706,6 @@ static void warning_no_port (void *data)
     report_message("ATC plugin: configured port number is not available", Message_Warning);
 }
 
-// Hal settings API
-// Restore default settings and write to non volatile storage (NVS).
 static void atc_settings_restore (void)
 {
     memset(&atc, 0, sizeof(atc_settings_t));
@@ -536,87 +720,63 @@ static void atc_settings_restore (void)
     atc.ports.tlo_clear = hal.port.num_digital_out ? hal.port.num_digital_out - 1 : 0;
 
     atc.drawbar_delay = 352;
-
     atc.flags.value = 0;
 
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&atc, sizeof(atc_settings_t), true);
 }
 
-// Write settings to non volatile storage (NVS).
 static void atc_settings_save (void)
 {
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&atc, sizeof(atc_settings_t), true);
 }
 
-// Load settings from volatile storage (NVS)
 static void atc_settings_load (void)
 {
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&atc, nvs_address, sizeof(atc_settings_t), true) != NVS_TransferResult_OK)
         atc_settings_restore();
 
-    active_ports.tool_present = atc.ports.tool_present;        
-
-    active_ports.drawbar_status = atc.ports.drawbar_status;         
-
-    active_ports.userinput = atc.ports.userinput; 
-   
+    active_ports.tool_present    = atc.ports.tool_present;
+    active_ports.drawbar_status  = atc.ports.drawbar_status;
+    active_ports.userinput       = atc.ports.userinput;
     active_ports.drawbar_control = atc.ports.drawbar_control;
-    
-    active_ports.taper_clear = atc.ports.taper_clear;   
-    
-    active_ports.air_seal = atc.ports.air_seal;  
-    
-    active_ports.tlo_clear = atc.ports.tlo_clear;                        
+    active_ports.taper_clear     = atc.ports.taper_clear;
+    active_ports.air_seal        = atc.ports.air_seal;
+    active_ports.tlo_clear       = atc.ports.tlo_clear;
 
-    
-
-    if(atc.flags.user_input_active){
-        if(ioport_claim(Port_Digital, Port_Input, &active_ports.userinput, "ATC User Input")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-
-        //Try to register the interrupt handler.
-        //if(!(hal.port.register_interrupt_handler(active_ports.userinput, IRQ_Mode_Change, read_userinput)))
-        //    task_add_immediate(warning_no_port, NULL);
+    if(atc.flags.user_input_active) {
+        if(!ioport_claim(Port_Digital, Port_Input, &active_ports.userinput, "ATC User Input"))
+            task_add_immediate(warning_no_port, NULL);
     }
 
-    if(atc.flags.tool_present_active){
-        if(ioport_claim(Port_Digital, Port_Input, &active_ports.tool_present, "Tool Present")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
-    }
-    if(atc.flags.drawbar_status_active){
-        if(ioport_claim(Port_Digital, Port_Input, &active_ports.drawbar_status, "Drawbar Open/Closed")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
+    if(atc.flags.tool_present_active) {
+        if(!ioport_claim(Port_Digital, Port_Input, &active_ports.tool_present, "Tool Present"))
+            task_add_immediate(warning_no_port, NULL);
     }
 
-    if(atc.flags.drawbar_control_active){
-        if(ioport_claim(Port_Digital, Port_Output, &active_ports.drawbar_control, "Drawbar Control")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
+    if(atc.flags.drawbar_status_active) {
+        if(!ioport_claim(Port_Digital, Port_Input, &active_ports.drawbar_status, "Drawbar Open/Closed"))
+            task_add_immediate(warning_no_port, NULL);
     }
-    if(atc.flags.taper_clear_active){
-        if(ioport_claim(Port_Digital, Port_Output, &active_ports.taper_clear, "Taper Clear")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
-    }       
-    if(atc.flags.air_seal_active){
-        if(ioport_claim(Port_Digital, Port_Output, &active_ports.air_seal, "Air Seal")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
-    }       
-    if(atc.flags.tlo_clear_active){
-        if(ioport_claim(Port_Digital, Port_Output, &active_ports.tlo_clear, "Toolsetter Clear")) {
-        } else
-            task_add_immediate(warning_no_port, NULL);    
-        //Not an interrupt pin.
-    }                                         
+
+    if(atc.flags.drawbar_control_active) {
+        if(!ioport_claim(Port_Digital, Port_Output, &active_ports.drawbar_control, "Drawbar Control"))
+            task_add_immediate(warning_no_port, NULL);
+    }
+
+    if(atc.flags.taper_clear_active) {
+        if(!ioport_claim(Port_Digital, Port_Output, &active_ports.taper_clear, "Taper Clear"))
+            task_add_immediate(warning_no_port, NULL);
+    }
+
+    if(atc.flags.air_seal_active) {
+        if(!ioport_claim(Port_Digital, Port_Output, &active_ports.air_seal, "Air Seal"))
+            task_add_immediate(warning_no_port, NULL);
+    }
+
+    if(atc.flags.tlo_clear_active) {
+        if(!ioport_claim(Port_Digital, Port_Output, &active_ports.tlo_clear, "Toolsetter Clear"))
+            task_add_immediate(warning_no_port, NULL);
+    }
 }
 
 static setting_details_t setting_details = {
@@ -633,14 +793,10 @@ static setting_details_t setting_details = {
     .restore = atc_settings_restore
 };
 
-// HAL plugin API
-// Reset claimed HAL entry points and restore previous tool if needed on soft restart.
-// Called from EXEC_RESET and EXEC_STOP handlers (via HAL).
 static void reset (void)
 {
     FLEXIHAL_DEBUG_PRINT("Reset.");
-    if(next_tool) { //TODO: move to gc_xxx() function?
-        // Restore previous tool if reset is during change
+    if(next_tool) {
         if(current_tool.tool_id != next_tool->tool_id) {
             if(grbl.tool_table.n_tools)
                 memcpy(gc_state.tool, &current_tool, sizeof(tool_data_t));
@@ -665,18 +821,15 @@ static void report_options (bool newopt)
 {
     on_report_options(newopt);
 
-    if(!newopt) {
-        hal.stream.write("[PLUGIN: FlexiHAL ATC v0.01]" ASCII_EOL);
-    }
+    if(!newopt)
+        hal.stream.write("[PLUGIN: FlexiHAL ATC v0.02]" ASCII_EOL);
 }
 
 static void atc_reset (void)
 {
-   
     driver_reset();
 }
 
-// Claim HAL tool change entry points and clear current tool offsets.
 void atc_init (void)
 {
     protocol_enqueue_foreground_task(report_info, "FlexiHAL ATC plugin trying to initialize!");
@@ -705,19 +858,13 @@ void atc_init (void)
     on_spindle_select = grbl.on_spindle_select;
     grbl.on_spindle_select = onSpindleSelect;
 
+    on_tool_change = hal.tool.change;
+    hal.tool.change = tool_change;
+
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;    
 
-    //atc_commands.on_get_commands = grbl.on_get_commands;
-    //grbl.on_get_commands = atc_get_commands;
-
     system_register_commands(&atc_commands);
-
-    /*on_execute_realtime = grbl.on_execute_realtime;
-    grbl.on_execute_realtime = atc_poll_realtime;
-
-    on_execute_delay = grbl.on_execute_delay;
-    grbl.on_execute_delay = atc_poll_delay;*/
 
     task_add_delayed(atc_poll, NULL, 1000);
 
