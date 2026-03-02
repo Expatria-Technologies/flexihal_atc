@@ -54,9 +54,11 @@ static void set_probe_target (coord_data_t *target, uint8_t axis)
                                        sys.work_envelope.min.values[axis]);
 }
 
-// Establish plane assignment from build configuration or current modal state.
-// Mirrors the plane setup block in tool_change.c:tool_change().
-static void get_probe_plane (plane_t *plane)
+// Establish plane assignment.
+// If TOOL_LENGTH_OFFSET_AXIS is set to a specific axis at compile time
+// (>= 0) we use it directly.  If it is -1 (all axes, the default) we
+// fall back to the plane passed in from the caller's parser_state.
+static void get_probe_plane (plane_t *plane, gc_modal_t *modal)
 {
 #if TOOL_LENGTH_OFFSET_AXIS >= 0
     plane->axis_linear = TOOL_LENGTH_OFFSET_AXIS;
@@ -71,7 +73,8 @@ static void get_probe_plane (plane_t *plane)
     plane->axis_1 = Y_AXIS;
   #endif
 #else
-    gc_get_plane_data(plane, gc_state.modal.plane_select);
+    // TOOL_LENGTH_OFFSET_AXIS == -1: axis determined by active plane modal
+    gc_get_plane_data(plane, modal->plane_select);
 #endif
 }
 
@@ -95,7 +98,7 @@ static void get_probe_plane (plane_t *plane)
 //   Status_HomingRequired        — XYZ not fully homed
 //   Status_GcodeUnsupportedCommand — COMPATIBILITY_LEVEL > 1
 // ---------------------------------------------------------------------------
-status_code_t tc_probe_tool (void)
+status_code_t tc_probe_tool (parser_state_t *parser_state)
 {
 #if COMPATIBILITY_LEVEL > 1
     // SemiAutomatic probing requires COMPATIBILITY_LEVEL <= 1
@@ -106,7 +109,7 @@ status_code_t tc_probe_tool (void)
         return Status_HomingRequired;
 
     plane_t plane;
-    get_probe_plane(&plane);
+    get_probe_plane(&plane, &parser_state->modal);
 
     bool ok;
     plan_line_data_t plan_data;

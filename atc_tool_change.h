@@ -6,6 +6,8 @@
 // and set the tool length offset.  Called by the $TCMEASURE system command
 // after a carousel tool change has physically completed.
 //
+// parser_state is required to determine the active plane when
+// TOOL_LENGTH_OFFSET_AXIS is -1 (the default, meaning all axes).
+//
 // Returns Status_OK on success, or an error code otherwise.
-// See atc_tool_change.c for full preconditions and behaviour.
-status_code_t tc_probe_tool (void);
+status_code_t tc_probe_tool (parser_state_t *parser_state);

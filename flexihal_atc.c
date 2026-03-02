@@ -122,6 +122,7 @@ static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
 static tool_change_ptr on_tool_change = NULL;
+static parser_state_t *atc_parser_state = NULL; // saved from tool_change(), used by $TCMEASURE
 //static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
 
 static uint8_t n_in_ports;
@@ -450,6 +451,7 @@ static pocket_id_t get_carousel_pocket (tool_id_t tool_id)
 
 static status_code_t tool_change (parser_state_t *parser_state)
 {
+    atc_parser_state = parser_state; // save for use by $TCMEASURE
     tool_data_t *current  = parser_state->tool;
 
 #if TOOLTABLE_ENABLE == 2
@@ -528,7 +530,7 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
 
     report_message("ATC: measuring tool length", Message_Info);
 
-    status_code_t result = tc_probe_tool();
+    status_code_t result = tc_probe_tool(atc_parser_state);
 
     if(result != Status_OK)
         report_message("TCMEASURE: probe failed", Message_Warning);
