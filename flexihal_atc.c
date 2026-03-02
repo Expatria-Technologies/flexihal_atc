@@ -508,7 +508,9 @@ static status_code_t tool_change (parser_state_t *parser_state)
     // No tooltable — always fall back to a simple pause for manual swap
     next_tool = NULL; // can't resolve tool data without tooltable
     memcpy(&current_tool, current, sizeof(tool_data_t));
-    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    parser_state->tool_change = true;
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
+    protocol_execute_realtime();                    // Execute...
 #endif
 
     if(on_tool_change)
@@ -534,6 +536,12 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
     return result;
 }
 
+static status_code_t carousel_wait (sys_state_t state, char *args)
+{
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    return Status_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Command table
 // ---------------------------------------------------------------------------
@@ -544,6 +552,7 @@ const sys_command_t atc_command_list[] = {
     {"TCADD",     carousel_add,     { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
     {"TCRM",      carousel_remove,  { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
     {"TCMEASURE", carousel_measure, { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
+    {"TCWAIT",    carousel_wait,    { .noargs = On  }, { .str = "Pause for manual tool swap (enters tool change mode)" }},
 };
 
 static sys_commands_t atc_commands = {

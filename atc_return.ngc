@@ -1,0 +1,37 @@
+; atc_return.ngc - Return the current tool to its carousel pocket
+;
+; Called by flexihal_atc.c tool_change() when the requested tool is NOT
+; in the carousel but the current tool IS.  The machine returns the
+; current tool to its pocket, then atc_pause.ngc takes over for the
+; manual swap.
+;
+; Parameters passed via numbered parameters:
+;   #1 = carousel pocket number to return the tool to (P word)
+;
+; Note: no $TCMEASURE here — that is handled by atc_pause.ngc which
+; runs immediately after this macro completes.
+
+M5    ; ensure spindle is off
+M9    ; ensure coolant is off
+
+; ── Calculate return pocket XY ───────────────────────────────────────────────
+; Adjust to match your carousel geometry (same formula as atc_change.ngc)
+#100 = [50.0 + [#1 - 1] * 40.0]    ; pocket X = x_pocket_1 + (pocket-1) * offset
+#101 = 200.0                         ; pocket Y (fixed for linear carousel)
+
+; ── Retract to safe Z ────────────────────────────────────────────────────────
+G53 G0 Z#<_home_z>
+
+; ── Move to return pocket XY ─────────────────────────────────────────────────
+G53 G0 X#100 Y#101
+
+; ── Descend and release tool into pocket ─────────────────────────────────────
+G53 G0 Z#<_atc_z_start>
+G53 G1 Z#<_atc_z_engage> F#<_atc_feed>
+
+$DRBO                                ; open drawbar — release tool into pocket
+G4 P0.5                              ; dwell for drawbar to fully open
+
+G53 G0 Z#<_home_z>                  ; retract with empty spindle
+
+M2
