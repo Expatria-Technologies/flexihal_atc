@@ -31,6 +31,8 @@
 #include "grbl/nvs_buffer.h"
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
+#include "grbl/ngc_flowctrl.h"
+#include "grbl/stream_file.h"
 
 #if TOOLTABLE_ENABLE == 2
 #include "tooltable.h"
@@ -449,10 +451,74 @@ static pocket_id_t get_carousel_pocket (tool_id_t tool_id)
 
 #endif // TOOLTABLE_ENABLE
 
+// ---------------------------------------------------------------------------
+// NGC macro execution helpers
+//
+// Mirrors the pattern in macros.c: stream_redirect_read() hooks the file
+// into grblHAL's stream system so the NGC executes in the normal motion
+// pipeline, with proper error handling and soft-reset cleanup.
+// ---------------------------------------------------------------------------
+
+static on_macro_return_ptr atc_on_macro_return = NULL;
+
+static void atc_macro_end (void)
+{
+    // Restore the macro return handler we displaced
+    grbl.on_macro_return = atc_on_macro_return;
+    atc_on_macro_return = NULL;
+}
+
+static status_code_t atc_macro_on_error (status_code_t status)
+{
+    char msg[48];
+    sprintf(msg, "ATC macro error: %d", (uint8_t)status);
+    report_message(msg, Message_Warning);
+
+    // Reset tooltable dirty state so onToolChanged is a no-op
+    tooltable_set_m6_prev(M6Origin_Unknown, -1);
+
+    atc_macro_end();
+    grbl.report.status_message(status);
+    return status;
+}
+
+static status_code_t atc_macro_on_eof (vfs_file_t *file, status_code_t status)
+{
+    if(status != Status_OK)
+        tooltable_set_m6_prev(M6Origin_Unknown, -1);
+
+    atc_macro_end();
+    return status;
+}
+
+// Open an NGC file and redirect the grblHAL input stream to execute it.
+// Returns Status_OK (file opened, execution started), or an error code.
+static status_code_t atc_macro_start (const char *filename)
+{
+    vfs_file_t *file;
+
+    if(state_get() == STATE_CHECK_MODE) {
+        vfs_stat_t st;
+        return vfs_stat(filename, &st) == 0 ? Status_OK : Status_FileOpenFailed;
+    }
+
+    if((file = stream_redirect_read(filename, atc_macro_on_error, atc_macro_on_eof)) == NULL) {
+        report_message(filename, Message_Warning);
+        report_message("ATC: macro file not found", Message_Warning);
+        return Status_FileOpenFailed;
+    }
+
+    // Displace any existing macro return handler, install ours
+    atc_on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = atc_macro_end;
+
+    return Status_OK;
+}
+
 static status_code_t tool_change (parser_state_t *parser_state)
 {
     atc_parser_state = parser_state; // save for use by $TCMEASURE
-    tool_data_t *current  = parser_state->tool;
+    tool_data_t *current = parser_state->tool;
 
 #if TOOLTABLE_ENABLE == 2
     // tool_pending is the tool ID requested by the Tn word before M6
@@ -479,40 +545,48 @@ static status_code_t tool_change (parser_state_t *parser_state)
     else
         tooltable_set_m6_prev(M6Origin_Manual, -1);
 
+    status_code_t status;
+
     if(incoming_pocket >= 1) {
         // ── PATH A: requested tool is in the carousel ──────────────────────
-        // Pocket number is passed so the NGC knows where to go for carousel
-        // motion. Tool measurement ($TCMEASURE) happens inside the macro
-        // afterwards against the fixed G59.3 toolsetter — it is independent
-        // of which pocket was used.
-        FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running ATC macro");
-        char macro[48];
-        sprintf(macro, "/linuxcnc/atc_change.ngc T%u P%u",
-                (unsigned)incoming->tool_id, (unsigned)incoming_pocket);
-        grbl.enqueue_gcode(macro);
+        // Pass T and P as named parameters so the NGC can read them via
+        // #<_t> and #<_p> without needing to parse the filename.
+        FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running atc_change.ngc");
+        ngc_named_param_set("_t", (float)incoming->tool_id);
+        ngc_named_param_set("_p", (float)incoming_pocket);
+        ngc_named_param_set("_atc_outgoing_pocket", (float)(outgoing_pocket >= 1 ? outgoing_pocket : 0));
+        status = atc_macro_start("/linuxcnc/atc_change.ngc");
 
     } else {
         // ── PATH B: requested tool is NOT in the carousel ──────────────────
         if(outgoing_pocket >= 1) {
-            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, returning current tool then pausing");
-            char macro[48];
-            sprintf(macro, "/linuxcnc/atc_return.ngc P%u", (unsigned)outgoing_pocket);
-            grbl.enqueue_gcode(macro);
+            // Return the outgoing tool to its pocket first, then atc_pause.ngc
+            // takes over for the manual swap.
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_return.ngc");
+            ngc_named_param_set("_atc_outgoing_pocket", (float)outgoing_pocket);
+            status = atc_macro_start("/linuxcnc/atc_return.ngc");
         } else {
-            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, no return needed, pausing for swap");
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_pause.ngc");
+            status = atc_macro_start("/linuxcnc/atc_pause.ngc");
         }
-
-        grbl.enqueue_gcode("/linuxcnc/atc_pause.ngc");
-        system_set_exec_state_flag(EXEC_TOOL_CHANGE);
     }
+
+    if(status != Status_OK) {
+        tooltable_set_m6_prev(M6Origin_Unknown, -1);
+        return status;
+    }
+
+    parser_state->tool_change = true;
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    protocol_execute_realtime();
 
 #else
     // No tooltable — always fall back to a simple pause for manual swap
-    next_tool = NULL; // can't resolve tool data without tooltable
+    next_tool = NULL;
     memcpy(&current_tool, current, sizeof(tool_data_t));
     parser_state->tool_change = true;
-    system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
-    protocol_execute_realtime();                    // Execute...
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    protocol_execute_realtime();
 #endif
 
     if(on_tool_change)
