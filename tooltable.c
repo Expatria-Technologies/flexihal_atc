@@ -239,7 +239,7 @@ static tool_pocket_t *find_empty_slot (void)
 // Public API
 // ---------------------------------------------------------------------------
 
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint8_t max_pockets)
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets)
 {
     if(!loaded)
         return CarouselOp_TableNotLoaded;
