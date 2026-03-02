@@ -1,0 +1,68 @@
+; atc_change.ngc - Carousel automatic tool change
+;
+; Called by flexihal_atc.c tool_change() with:
+;   T<tool_id> P<carousel_pocket>
+;
+; Parameters passed via numbered parameters (set before calling this macro):
+;   #1 = tool number (T word)
+;   #2 = carousel pocket number (P word)
+;
+; Assumes:
+;   - G59.3 is set to the toolsetter position
+;   - G30 is set to a safe XY carousel access position
+;   - Z home position is safe clearance height
+;   - Carousel pockets are arranged linearly along X from x_pocket_1
+;     with pocket_offset spacing.  Adjust the pocket XY calculation
+;     below to match your physical carousel layout.
+;
+; On completion, $TCMEASURE is called to set the tool length offset.
+
+; ── Safety ──────────────────────────────────────────────────────────────────
+M5          ; ensure spindle is off
+M9          ; ensure coolant is off
+
+; ── Retract to Z home (safe clearance) ──────────────────────────────────────
+G53 G0 Z#<_home_z>
+
+; ── Calculate pocket XY position ────────────────────────────────────────────
+; Adjust #100 / #101 to match your carousel geometry.
+; Example: linear carousel along X, pocket 1 at X=50, 40mm pitch.
+#100 = [50.0 + [#2 - 1] * 40.0]    ; pocket X = x_pocket_1 + (pocket-1) * offset
+#101 = 200.0                         ; pocket Y (fixed for linear carousel)
+
+; ── Return current tool to its pocket ───────────────────────────────────────
+; (The outgoing tool is whatever is currently in the spindle.
+;  We move above the pocket, descend, open drawbar, retract.)
+
+G53 G0 X#100 Y#101                  ; rapid to pocket XY at safe Z
+
+; Descend to tool engagement height.
+; Adjust Z values to match your spindle-to-carousel geometry.
+G53 G0 Z#<_atc_z_start>             ; Z start (just above pocket)
+G53 G1 Z#<_atc_z_engage> F#<_atc_feed>  ; descend to engage
+
+$DRBO                                ; open drawbar — release tool into pocket
+G4 P0.5                              ; dwell 500ms for drawbar to fully open
+
+G53 G0 Z#<_home_z>                  ; retract to safe Z
+
+; ── Move to new tool pocket ──────────────────────────────────────────────────
+; Recalculate XY for the incoming pocket (already in #100/#101 from above
+; since #2 is the incoming pocket).  If your carousel returns the outgoing
+; tool to a different pocket than the incoming one, calculate separately.
+
+G53 G0 X#100 Y#101                  ; rapid to incoming pocket XY
+
+; ── Pick up new tool ─────────────────────────────────────────────────────────
+G53 G0 Z#<_atc_z_start>             ; descend to start height
+G53 G1 Z#<_atc_z_engage> F#<_atc_feed>  ; descend to engage tool shank
+
+$DRBC                                ; close drawbar — clamp tool
+G4 P0.5                              ; dwell for drawbar to fully close
+
+G53 G0 Z#<_home_z>                  ; retract with new tool
+
+; ── Measure new tool length against G59.3 toolsetter ────────────────────────
+$TCMEASURE
+
+M2  ; end of macro

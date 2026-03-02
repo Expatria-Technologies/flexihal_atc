@@ -36,6 +36,8 @@
 #include "tooltable.h"
 #endif
 
+#include "atc_tool_change.h"
+
 //#include "flexihal_atc.h"
 
 // Used to print debug statements in the normal stream
@@ -477,6 +479,10 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
     if(incoming_pocket >= 1) {
         // ── PATH A: requested tool is in the carousel ──────────────────────
+        // Pocket number is passed so the NGC knows where to go for carousel
+        // motion. Tool measurement ($TCMEASURE) happens inside the macro
+        // afterwards against the fixed G59.3 toolsetter — it is independent
+        // of which pocket was used.
         FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running ATC macro");
         char macro[48];
         sprintf(macro, "/linuxcnc/atc_change.ngc T%u P%u",
@@ -510,15 +516,34 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
     return Status_OK;
 }
+
+static status_code_t carousel_measure (sys_state_t state, char *args)
+{
+    if(state_get() != STATE_IDLE) {
+        report_message("TCMEASURE: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    report_message("ATC: measuring tool length", Message_Info);
+
+    status_code_t result = tc_probe_tool();
+
+    if(result != Status_OK)
+        report_message("TCMEASURE: probe failed", Message_Warning);
+
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // Command table
 // ---------------------------------------------------------------------------
 
 const sys_command_t atc_command_list[] = {
-    {"DRBO",  drawbar_open,    { .noargs = On }, { .str = "Open the drawbar" }},
-    {"DRBC",  drawbar_close,   { .noargs = On }, { .str = "Close the drawbar" }},
-    {"TCADD", carousel_add,    { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
-    {"TCRM",  carousel_remove, { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
+    {"DRBO",      drawbar_open,     { .noargs = On  }, { .str = "Open the drawbar" }},
+    {"DRBC",      drawbar_close,    { .noargs = On  }, { .str = "Close the drawbar" }},
+    {"TCADD",     carousel_add,     { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
+    {"TCRM",      carousel_remove,  { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
+    {"TCMEASURE", carousel_measure, { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
 };
 
 static sys_commands_t atc_commands = {
