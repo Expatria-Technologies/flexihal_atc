@@ -19,6 +19,10 @@
   You should have received a copy of the GNU General Public License
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 
+; grblHAL tooltable - LinuxCNC format
+; P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]
+; P0 entries are tools known to the system but not currently in the carousel.
+
 */
 
 #include "driver.h"
@@ -618,10 +622,61 @@ static void onReportOptions (bool newopt)
         report_plugin("Tool table", "0.03");
 }
 
+static status_code_t list_tools (sys_state_t state, char *args)
+{
+    uint_fast16_t idx;
+    char buf[120], tmp[32];
+    uint_fast8_t axis;
+    bool any = false;
+
+    // Header
+    hal.stream.write("[TOOLTABLE: P=pocket T=tool Z=offset D=diameter name]" ASCII_EOL);
+
+    for(idx = 1; idx < n_pockets; idx++) {
+
+        const tool_pocket_t *p = &pockets[idx];
+
+        if(p->tool.tool_id < 0)
+            continue;
+
+        any = true;
+
+        // Pocket — P0 means tool is known but not in the carousel
+        uint16_t file_pocket = (p->pocket_id >= 1) ? (uint16_t)p->pocket_id : 0;
+        sprintf(buf, "[TOOL: P%u T%u", file_pocket, (uint16_t)p->tool.tool_id);
+
+        for(axis = 0; axis < N_AXIS; axis++) {
+            if(p->tool.offset.values[axis] != 0.0f) {
+                sprintf(tmp, " %s%.3f", axis_letter[axis], p->tool.offset.values[axis]);
+                strcat(buf, tmp);
+            }
+        }
+
+        if(p->tool.radius != 0.0f) {
+            sprintf(tmp, " D%.3f", p->tool.radius * 2.0f);
+            strcat(buf, tmp);
+        }
+
+        if(*p->name) {
+            strcat(buf, " ;");
+            strcat(buf, p->name);
+        }
+
+        strcat(buf, "]" ASCII_EOL);
+        hal.stream.write(buf);
+    }
+
+    if(!any)
+        hal.stream.write("[TOOL: table is empty]" ASCII_EOL);
+
+    return Status_OK;
+}
+
 void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
-        { "TTLOAD", load_tools, {}, { .str = "(re)load tool table" } }
+        { "TTLOAD", load_tools, {}, { .str = "(re)load tool table" } },
+        { "TTLIST", list_tools, {}, { .str = "List all tools in the tool table" } }
      };
 
     static sys_commands_t tt_commands = {
