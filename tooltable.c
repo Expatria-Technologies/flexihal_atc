@@ -505,8 +505,46 @@ static status_code_t load_tools (sys_state_t state, char *args)
     return status == Status_OK ? Status_OK : Status_FileReadError;
 }
 
+// ---------------------------------------------------------------------------
+// Ensure the tooltable directory and file exist on the mounted filesystem.
+// Called from loadTools() on every VFS mount event.  If the directory or
+// file are missing they are created so that the first $TCADD command has
+// somewhere to write without error.
+// ---------------------------------------------------------------------------
+static void ensure_tooltable_exists (void)
+{
+    // Check whether the file already exists by attempting to open it
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(file) {
+        // File exists — nothing to do
+        vfs_close(file);
+        return;
+    }
+
+    // File not found — try to create the directory first (ignore error if
+    // it already exists; vfs_mkdir behaviour varies by filesystem driver)
+    vfs_mkdir("/linuxcnc");
+
+    // Create an empty tooltable file.  An empty file is valid — load_tools()
+    // will simply leave n_tools at 0 and loaded as false until entries are
+    // added via $TCADD.
+    file = vfs_open(filename, "w");
+    if(file) {
+        // Write a header comment so the file is recognisable in a text editor
+        const char *header = "; grblHAL tooltable - LinuxCNC format\n"
+                             "; P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]\n"
+                             "; P0 entries are tools known to the system but not currently in the carousel.\n";
+        vfs_write(header, strlen(header), 1, file);
+        vfs_close(file);
+        report_message("Tooltable: created /linuxcnc/tooltable.tbl", Message_Info);
+    } else {
+        report_message("Tooltable: failed to create /linuxcnc/tooltable.tbl", Message_Warning);
+    }
+}
+
 static void loadTools (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
 {
+    ensure_tooltable_exists();
     load_tools(state_get(), filename);
 
     if(on_vfs_mount)
