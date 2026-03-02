@@ -110,6 +110,7 @@ typedef struct {
     uint16_t drawbar_delay;
     atc_ports_t  ports;
     atc_settings_flags_t flags;
+    int16_t number_of_pockets;
 } atc_settings_t;
 
 static nvs_address_t nvs_address;
@@ -314,7 +315,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             report_message("TCADD: usage is $TCADD Tn  (or $TCADD to use current tool)", Message_Warning);
             return Status_BadNumberFormat;
         }
-        uint8_t cc = 1;
+        uint_fast8_t cc = 1;
         status_code_t parse_status = read_uint(args, &cc, &tool_id);
         if(parse_status != Status_OK) {
             report_message("TCADD: invalid tool number", Message_Warning);
@@ -331,7 +332,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         }
     }
 
-    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id);
+    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets);
 
     switch(result) {
         case CarouselOp_OK:
@@ -347,7 +348,11 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             return Status_GcodeValueOutOfRange;
 
         case CarouselOp_NoPocketAvailable:
-            report_message("TCADD: carousel is full, no free pocket", Message_Warning);
+            {
+                char msg[60];
+                sprintf(msg, "TCADD: carousel is full (%u pockets configured)", (unsigned)atc.number_of_pockets);
+                report_message(msg, Message_Warning);
+            }
             return Status_GcodeValueOutOfRange;
 
         case CarouselOp_TableNotLoaded:
@@ -791,16 +796,17 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
 
 static const setting_detail_t atc_settings[] = {
-    { 953, Group_AuxPorts, "ATC Drawbar Delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_NonCore, &atc.drawbar_delay, NULL, NULL, },
+    { 953, Group_Toolchange, "ATC Drawbar Delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_NonCore, &atc.drawbar_delay, NULL, NULL, },
 
-    { 954, Group_AuxPorts, "ATC User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, NULL, { .reboot_required = On } },
-    { 955, Group_AuxPorts, "ATC Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, NULL, { .reboot_required = On } },
-    { 956, Group_AuxPorts, "ATC Drawbar Status Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.drawbar_status, NULL, NULL, { .reboot_required = On } },
-    { 957, Group_AuxPorts, "ATC Drawbar Control Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.drawbar_control, NULL, NULL, { .reboot_required = On } },
-    { 958, Group_AuxPorts, "ATC Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, NULL, { .reboot_required = On } },
-    { 959, Group_AuxPorts, "ATC Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
-    { 960, Group_AuxPorts, "ATC TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
-    { 961, Group_AuxPorts, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
+    { 954, Group_Toolchange, "ATC User Input Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.userinput, NULL, NULL, { .reboot_required = On } },
+    { 955, Group_Toolchange, "ATC Tool Present Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.tool_present, NULL, NULL, { .reboot_required = On } },
+    { 956, Group_Toolchange, "ATC Drawbar Status Port", NULL, Format_Int8, "#0", "0", max_in_port, Setting_NonCore, &atc.ports.drawbar_status, NULL, NULL, { .reboot_required = On } },
+    { 957, Group_Toolchange, "ATC Drawbar Control Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.drawbar_control, NULL, NULL, { .reboot_required = On } },
+    { 958, Group_Toolchange, "ATC Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, NULL, { .reboot_required = On } },
+    { 959, Group_Toolchange, "ATC Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
+    { 960, Group_Toolchange, "ATC TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
+    { 962, Group_Toolchange, "ATC Number of Pockets", "pockets", Format_Int16, "##0", "1", "9999", Setting_NonCore, &atc.number_of_pockets, NULL, NULL },
+    { 961, Group_Toolchange, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
 };
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
@@ -814,6 +820,7 @@ static const setting_descr_t atc_descriptions[] = {
     { 958, "Aux output port for air seal control" },
     { 959, "Aux output port for taper clear control" },
     { 960, "Aux output port for toolsetter clearing" },
+    { 962, "Number of physical pockets in the carousel (max 9999). $TCADD will refuse to assign a pocket number beyond this limit." },
     { 961, "Aux input for ATC button is enabled.\\n"
             "Aux input for tool clamp sensor is enabled.\\n"
             "Aux input for drawbar status is enabled.\\n\\n"
@@ -835,6 +842,7 @@ static void atc_settings_restore (void)
 {
     memset(&atc, 0, sizeof(atc_settings_t));
 
+    atc.number_of_pockets = 12; // default carousel size
     atc.ports.userinput = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.tool_present = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.drawbar_status = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
@@ -902,6 +910,14 @@ static void atc_settings_load (void)
         if(!ioport_claim(Port_Digital, Port_Output, &active_ports.tlo_clear, "Toolsetter Clear"))
             task_add_immediate(warning_no_port, NULL);
     }
+
+
+    //this is where we redirect the tool change
+    if (settings.tool_change.mode != ToolChange_Automatic)
+        return;  
+
+    on_tool_change = hal.tool.change;
+    hal.tool.change = tool_change;    
 }
 
 static setting_details_t setting_details = {
@@ -964,7 +980,7 @@ static atc_status_t atc_get_state (void)
 }
 
 void atc_init (void)
-{
+{    
     protocol_enqueue_foreground_task(report_info, "FlexiHAL ATC plugin trying to initialize!");
 
     bool ok = (n_input_ports = ioports_available(Port_Digital, Port_Input));
@@ -990,9 +1006,6 @@ void atc_init (void)
 
     on_spindle_select = grbl.on_spindle_select;
     grbl.on_spindle_select = onSpindleSelect;
-
-    on_tool_change = hal.tool.change;
-    hal.tool.change = tool_change;
 
     // Set atc_get_state so tc_init() sees ATC_Online and does not overwrite
     // hal.tool.change with the basic manual change implementation.

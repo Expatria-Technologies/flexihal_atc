@@ -51,7 +51,7 @@ void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket);
 // Finds the lowest-numbered free pocket, assigns the tool to it, and
 // persists the change to the tooltable file.
 // Returns CarouselOp_OK on success, or an error code otherwise.
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id);
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint8_t max_pockets);
 
 // Remove a tool from the carousel (clears pocket_id only — offsets persist)
 // and persists the change to the tooltable file.

@@ -235,7 +235,7 @@ static tool_pocket_t *find_empty_slot (void)
 // Public API
 // ---------------------------------------------------------------------------
 
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id)
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint8_t max_pockets)
 {
     if(!loaded)
         return CarouselOp_TableNotLoaded;
@@ -245,6 +245,15 @@ carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id)
 
     if(existing && existing->pocket_id >= 0)
         return CarouselOp_ToolAlreadyInPocket; // already in carousel
+
+    // Count how many pockets are currently occupied
+    uint8_t used = 0;
+    for(uint32_t i = 0; i < n_pockets; i++) {
+        if(pockets[i].pocket_id >= 1)
+            used++;
+    }
+    if(max_pockets > 0 && used >= max_pockets)
+        return CarouselOp_NoPocketAvailable;
 
     // Find a free carousel pocket number
     pocket_id_t free_pocket = find_free_pocket();
