@@ -1,47 +1,52 @@
 ; atc_change.ngc - Carousel automatic tool change
 ;
 ; Called by flexihal_atc.c tool_change() when the requested tool is in
-; the carousel.  Named parameters are set by the plugin before this macro
-; is started:
+; the carousel.  Parameters set by the plugin before this macro runs:
 ;
-;   #<_t>                    = incoming tool number
-;   #<_p>                    = incoming carousel pocket number
-;   #<_atc_outgoing_pocket>  = outgoing tool pocket (0 = was hand-loaded)
+;   #4900 = incoming tool number
+;   #4901 = incoming carousel pocket number
+;   #4902 = outgoing tool pocket (0 = outgoing tool was hand-loaded)
 ;
-; On completion, $TCMEASURE probes the new tool against G59.3.
+; Machine geometry - set these numbered parameters to match your carousel.
+; These can be set once in a startup macro and will persist for the session:
 ;
-; Adjust pocket XY geometry constants to match your carousel layout.
+;   #4910 = X position of pocket 1
+;   #4911 = Y position of all pockets (fixed for linear carousel)
+;   #4912 = pocket pitch (X spacing between pockets)
+;   #4913 = Z start height (just above pocket, machine coords)
+;   #4914 = Z engage height (tool fully seated in pocket, machine coords)
+;   #4915 = engage feed rate
+;   #4916 = X position of manual tool change location
+;   #4917 = Y position of manual tool change location
 
 M5    ; ensure spindle is off
 M9    ; ensure coolant is off
 
 ; ── Calculate incoming pocket XY ─────────────────────────────────────────────
-; Example: linear carousel along X, pocket 1 at X=50, 40mm pitch.
-; Replace with your actual carousel geometry.
-#100 = [50.0 + [#<_p> - 1] * 40.0]   ; pocket X
-#101 = 200.0                            ; pocket Y (fixed for linear carousel)
+#100 = [#4910 + [#4901 - 1] * #4912]   ; pocket X
+#101 = #4911                             ; pocket Y
 
 ; ── Retract to safe Z ────────────────────────────────────────────────────────
-G53 G0 Z#<_home_z>
+G53 G0 Z0
 
 ; ── Return outgoing tool if it came from the carousel ────────────────────────
-o100 if [#<_atc_outgoing_pocket> GT 0]
-  #102 = [50.0 + [#<_atc_outgoing_pocket> - 1] * 40.0]  ; outgoing pocket X
+o100 if [#4902 GT 0]
+  #102 = [#4910 + [#4902 - 1] * #4912]  ; outgoing pocket X
   G53 G0 X#102 Y#101
-  G53 G0 Z#<_atc_z_start>
-  G53 G1 Z#<_atc_z_engage> F#<_atc_feed>
+  G53 G0 Z#4913
+  G53 G1 Z#4914 F#4915
   $DRBO
   G4 P0.5
-  G53 G0 Z#<_home_z>
+  G53 G0 Z0
 o100 endif
 
 ; ── Pick up incoming tool ─────────────────────────────────────────────────────
 G53 G0 X#100 Y#101
-G53 G0 Z#<_atc_z_start>
-G53 G1 Z#<_atc_z_engage> F#<_atc_feed>
+G53 G0 Z#4913
+G53 G1 Z#4914 F#4915
 $DRBC
 G4 P0.5
-G53 G0 Z#<_home_z>
+G53 G0 Z0
 
 ; ── Measure new tool length against G59.3 toolsetter ─────────────────────────
 $TCMEASURE

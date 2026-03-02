@@ -33,6 +33,7 @@
 #include "grbl/state_machine.h"
 #include "grbl/ngc_flowctrl.h"
 #include "grbl/stream_file.h"
+#include "grbl/ngc_params.h"
 
 #if TOOLTABLE_ENABLE == 2
 #include "tooltable.h"
@@ -561,9 +562,13 @@ static status_code_t tool_change (parser_state_t *parser_state)
         // Pass T and P as named parameters so the NGC can read them via
         // #<_t> and #<_p> without needing to parse the filename.
         FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running atc_change.ngc");
-        ngc_named_param_set("_t", (float)incoming->tool_id);
-        ngc_named_param_set("_p", (float)incoming_pocket);
-        ngc_named_param_set("_atc_outgoing_pocket", (float)(outgoing_pocket >= 1 ? outgoing_pocket : 0));
+        // Pass parameters via numbered params in user range (31-5000):
+        //   #4900 = incoming tool number
+        //   #4901 = incoming carousel pocket
+        //   #4902 = outgoing carousel pocket (0 if outgoing was hand-loaded)
+        ngc_param_set(4900, (float)incoming->tool_id);
+        ngc_param_set(4901, (float)incoming_pocket);
+        ngc_param_set(4902, (float)(outgoing_pocket >= 1 ? outgoing_pocket : 0));
         status = atc_macro_start("/linuxcnc/atc_change.ngc");
 
     } else {
@@ -572,7 +577,8 @@ static status_code_t tool_change (parser_state_t *parser_state)
             // Return the outgoing tool to its pocket first, then atc_pause.ngc
             // takes over for the manual swap.
             FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_return.ngc");
-            ngc_named_param_set("_atc_outgoing_pocket", (float)outgoing_pocket);
+            // #4902 = outgoing carousel pocket
+            ngc_param_set(4902, (float)outgoing_pocket);
             status = atc_macro_start("/linuxcnc/atc_return.ngc");
         } else {
             FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_pause.ngc");
@@ -949,6 +955,14 @@ static void atc_reset (void)
     driver_reset();
 }
 
+static atc_status_t atc_get_state (void)
+{
+    // If macros.c has claimed hal.tool.change via tc.macro, report Online
+    // so that tc_init() does not overwrite it.  If tc.macro is not present,
+    // our own tool_change() is in place — also report Online to block tc_init().
+    return ATC_Online;
+}
+
 void atc_init (void)
 {
     protocol_enqueue_foreground_task(report_info, "FlexiHAL ATC plugin trying to initialize!");
@@ -979,6 +993,13 @@ void atc_init (void)
 
     on_tool_change = hal.tool.change;
     hal.tool.change = tool_change;
+
+    // Set atc_get_state so tc_init() sees ATC_Online and does not overwrite
+    // hal.tool.change with the basic manual change implementation.
+    // We do NOT set hal.driver_cap.atc here — leaving it Off allows
+    // macros.c to claim hal.tool.change if a tc.macro file is found on the
+    // filesystem, which is the intended override behaviour.
+    hal.tool.atc_get_state = atc_get_state;
 
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;    
