@@ -52,6 +52,8 @@
 typedef struct {
     tool_id_t   tool_id;    // -1 = empty slot
     pocket_id_t pocket_id;  // -1 = P0 (not in carousel), >= 1 = carousel pocket
+    tool_data_t tool;       // cached from file — stable pointer for getTool()
+    char        name[sizeof(((tool_pocket_t*)0)->name)];
 } tool_index_entry_t;
 
 // ---------------------------------------------------------------------------
@@ -117,7 +119,26 @@ static bool index_upsert (tool_id_t tool_id, pocket_id_t pocket_id)
         return false;
     tt_index[n_tools].tool_id   = tool_id;
     tt_index[n_tools].pocket_id = pocket_id;
+    memset(&tt_index[n_tools].tool, 0, sizeof(tool_data_t));
+    tt_index[n_tools].tool.tool_id = tool_id;
+    tt_index[n_tools].name[0] = '\0';
     n_tools++;
+    return true;
+}
+
+static bool index_upsert_full (const tool_pocket_t *p)
+{
+    tool_index_entry_t *e = index_find(p->tool.tool_id);
+    if(!e) {
+        if(n_tools >= index_cap && !index_grow())
+            return false;
+        e = &tt_index[n_tools++];
+    }
+    e->tool_id   = p->tool.tool_id;
+    e->pocket_id = p->pocket_id;
+    memcpy(&e->tool, &p->tool, sizeof(tool_data_t));
+    strncpy(e->name, p->name, sizeof(e->name) - 1);
+    e->name[sizeof(e->name) - 1] = '\0';
     return true;
 }
 
@@ -306,7 +327,7 @@ static bool rebuild_index (void)
 
     while(read_line(file, line, sizeof(line))) {
         if(parse_line(line, &entry))
-            index_upsert(entry.tool.tool_id, entry.pocket_id);
+            index_upsert_full(&entry);
     }
 
     vfs_close(file);
@@ -422,7 +443,7 @@ static bool append_tool (const tool_pocket_t *p)
     write_pocket_line(file, p);
     vfs_close(file);
 
-    index_upsert(p->tool.tool_id, p->pocket_id);
+    index_upsert_full(p);
     grbl.tool_table.n_tools = n_tools;
     return true;
 }
@@ -431,55 +452,42 @@ static bool append_tool (const tool_pocket_t *p)
 // grbl.tool_table.get_tool - scan file for tool_id, return full entry.
 // The RAM tt_index is checked first so we never open the file for unknown tools.
 // ---------------------------------------------------------------------------
+// getTool returns pointers directly into the index entry, which is stable
+// persistent storage — no static result buffer needed, no file open required.
+// The index is always kept up to date with full tool data by rebuild_index()
+// and index_upsert_full(), so this is safe across successive calls.
 static tool_table_entry_t *getTool (tool_id_t tool_id)
 {
-    static tool_table_entry_t result = {0};
-    static tool_pocket_t      found  = {0};
-
-    result.data = NULL;
+    static tool_table_entry_t empty = { .data = NULL };
 
     tool_index_entry_t *ie = index_find(tool_id);
     if(!ie)
-        return &result;
+        return &empty;
 
     if(!settings.macro_atc_flags.random_toolchanger && ie->pocket_id < 1)
-        return &result;
+        return &empty;
 
-    vfs_file_t *file = vfs_open(filename, "r");
-    if(!file)
-        return &result;
-
-    char line[300];
-    tool_pocket_t entry;
-
-    while(read_line(file, line, sizeof(line))) {
-        if(parse_line(line, &entry) && entry.tool.tool_id == tool_id) {
-            memcpy(&found, &entry, sizeof(tool_pocket_t));
-            result.data   = &found.tool;
-            result.pocket = found.pocket_id;
-            result.name   = found.name;
-            break;
-        }
-    }
-
-    vfs_close(file);
+    // Return pointers directly into the index entry — stable across calls
+    static tool_table_entry_t result;
+    result.data   = &ie->tool;
+    result.pocket = ie->pocket_id;
+    result.name   = ie->name;
     return &result;
 }
 
 // ---------------------------------------------------------------------------
-// grbl.tool_table.get_tool_by_idx - enumerate using RAM tt_index, fetch from file.
+// grbl.tool_table.get_tool_by_idx - same implementation as getTool.
 // ---------------------------------------------------------------------------
 static tool_table_entry_t *getToolByIdx (uint32_t idx)
 {
-    // grblHAL core (report.c) calls this 1-based: idx runs from 1 to n_tools.
-    // Convert to 0-based before looking up in tt_index.
-    static tool_table_entry_t empty = {0};
-
-    if(idx == 0 || idx > n_tools) {
-        empty.data = NULL;
-        return &empty;
+    // idx is a pocket number (1-based). Scan the index for the tool in that pocket.
+    for(uint16_t i = 0; i < n_tools; i++) {
+        if(tt_index[i].pocket_id == (pocket_id_t)idx)
+            return getTool(tt_index[i].tool_id);
     }
-    return getTool(tt_index[idx - 1].tool_id);
+
+    static tool_table_entry_t empty = { .data = NULL };
+    return &empty;
 }
 
 // ---------------------------------------------------------------------------
@@ -758,6 +766,11 @@ static status_code_t load_tools (sys_state_t state, char *args)
     return rebuild_index() ? Status_OK : Status_FileReadError;
 }
 
+static status_code_t reload_tools (void)
+{
+    return load_tools(state_get(), NULL);
+}
+
 // ---------------------------------------------------------------------------
 // File management
 // ---------------------------------------------------------------------------
@@ -830,6 +843,7 @@ void tooltable_init (void)
 
     grbl.tool_table.n_tools         = 9999;
     grbl.tool_table.get_tool        = getTool;
+    grbl.tool_table.reload           = reload_tools;
     grbl.tool_table.set_tool        = setTool;
     grbl.tool_table.get_tool_by_idx = getToolByIdx;
     grbl.tool_table.clear           = clearTools;
