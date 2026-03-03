@@ -19,10 +19,6 @@
   You should have received a copy of the GNU General Public License
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 
-; grblHAL tooltable - LinuxCNC format
-; P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]
-; P0 entries are tools known to the system but not currently in the carousel.
-
 */
 
 #include "driver.h"
@@ -48,167 +44,104 @@
 
 #include "tooltable.h"
 
-static bool loaded = false;
-static uint32_t n_pockets = 1;
-static tool_pocket_t pocket0, *pockets = &pocket0;
-static tool_id_t current_tool = 0;
-static char filename[] = "/linuxcnc/tooltable.tbl";
+// ---------------------------------------------------------------------------
+// Lightweight index entry - kept in RAM for fast enumeration.
+// Only tool_id and pocket_id are stored here; all other data is read from
+// the file on demand.  At 8 bytes per entry a 100-tool table costs 800 bytes.
+// ---------------------------------------------------------------------------
+typedef struct {
+    tool_id_t   tool_id;    // -1 = empty slot
+    pocket_id_t pocket_id;  // -1 = P0 (not in carousel), >= 1 = carousel pocket
+} tool_index_entry_t;
 
-static tool_select_ptr tool_select;
-static on_tool_changed_ptr on_tool_changed;
-static on_vfs_mount_ptr on_vfs_mount;
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+static bool              fs_available = false;  // VFS has been mounted
+static uint16_t          n_tools      = 0;      // number of valid tools in index
+static uint16_t          index_cap    = 0;      // allocated capacity of tt_index
+static tool_index_entry_t *tt_index   = NULL;   // lightweight RAM index
+static tool_id_t         current_tool = 0;      // tool currently in spindle
+static char              filename[]   = "/linuxcnc/tooltable.tbl";
+
+// M6 tool-change state - set by ATC plugin, consumed in onToolChanged()
+static m6_tool_origin_t  m6_prev_tool_origin = M6Origin_Unknown;
+static pocket_id_t       m6_prev_tool_pocket = -1;
+
+static tool_select_ptr       tool_select;
+static on_tool_changed_ptr   on_tool_changed;
+static on_vfs_mount_ptr      on_vfs_mount;
 static on_report_options_ptr on_report_options;
 
-// M6 tool-change state — set by the ATC plugin via tooltable_set_m6_prev()
-// before enqueueing its macro, consumed in onToolChanged() after completion.
-static m6_tool_origin_t  m6_prev_tool_origin = M6Origin_Unknown;
-static pocket_id_t       m6_prev_tool_pocket  = -1;
-static tool_id_t         m6_prev_tool_id      = -1; // tool being replaced
-
+// ---------------------------------------------------------------------------
+// Public: called by ATC plugin before enqueueing a macro
+// ---------------------------------------------------------------------------
 void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket)
 {
     m6_prev_tool_origin = origin;
     m6_prev_tool_pocket = pocket;
 }
 
-static tool_pocket_t *get_pocket (tool_id_t tool_id)
+// ---------------------------------------------------------------------------
+// Index management
+// ---------------------------------------------------------------------------
+
+static bool index_grow (void)
 {
-    uint_fast16_t idx;
-    tool_pocket_t *pocket = NULL;
-
-    if(tool_id >= 0) for(idx = 0; idx < n_pockets; idx++) {
-        if(pockets[idx].tool.tool_id == tool_id) {
-            pocket = &pockets[idx];
-            break;
-        }
-    }
-
-    return pocket;
-}
-
-static tool_table_entry_t *getTool (tool_id_t tool_id)
-{
-    static tool_table_entry_t tool = {0};
-
-    tool_pocket_t *pocket;
-    if((pocket = get_pocket(tool_id)) && (!settings.macro_atc_flags.random_toolchanger || pocket->pocket_id != -1)) {
-        tool.data = &pocket->tool;
-        tool.pocket = pocket->pocket_id;
-        tool.name = pocket->name;
-    } else
-        tool.data = NULL;
-
-    return &tool;
-}
-
-static tool_table_entry_t *getToolByIdx (uint32_t idx)
-{
-    static tool_table_entry_t tool = {0};
-
-    tool_pocket_t *pocket = idx < n_pockets ? &pockets[idx] : NULL;
-
-    if(pocket && pocket->tool.tool_id) {
-        tool.data = &pocket->tool;
-        tool.pocket = pocket->pocket_id;
-        tool.name = pocket->name;
-    } else
-        tool.data = NULL;
-
-    return &tool;
-}
-
-// Write a single pocket entry to the open file.
-// Tools with a carousel pocket use their real pocket number.
-// Tools with no pocket (removed from carousel / in spindle) are written
-// as P0 so their offsets and name survive a reload.  P0 is the LinuxCNC
-// convention for "tool known but not currently in a pocket".
-static void write_pocket_line (vfs_file_t *file, const tool_pocket_t *p)
-{
-    char buf[400], tmp[20];
-    uint_fast16_t axis;
-
-    // P0 = no carousel pocket; real pocket number otherwise
-    uint16_t file_pocket = (p->pocket_id >= 1) ? (uint16_t)p->pocket_id : 0;
-
-    sprintf(buf, "P%u T%u ", file_pocket, (uint16_t)p->tool.tool_id);
-
-    for(axis = 0; axis < N_AXIS; axis++) {
-        if(p->tool.offset.values[axis] != 0.0f) {
-            sprintf(tmp, "%s%-.3f ", axis_letter[axis], p->tool.offset.values[axis]);
-            strcat(buf, tmp);
-        }
-    }
-    if(p->tool.radius != 0.0f) {
-        sprintf(tmp, "D%-.3f ", p->tool.radius * 2.0f);
-        strcat(buf, tmp);
-    }
-    if(*p->name)
-        sprintf(strchr(buf, '\0'), "; %s", p->name);
-
-    strcat(buf, "\n");
-    vfs_write(buf, strlen(buf), 1, file);
-}
-
-static bool writeTools (tool_data_t *tool_data)
-{
-    bool ok;
-    tool_pocket_t *pocket;
-    vfs_file_t *file;
-
-    // Sync in-memory copy if caller passed a different buffer
-    if((ok = !!(pocket = get_pocket(tool_data->tool_id)))) {
-        if(&pocket->tool != tool_data)
-            memcpy(&pocket->tool, tool_data, sizeof(tool_data_t));
-    }
-
-    if(ok && (ok = !!(file = vfs_open(filename, "w")))) {
-
-        uint_fast16_t idx;
-
-        for(idx = 1; idx < n_pockets; idx++) {
-            // Write every known tool (tool_id >= 0), regardless of pocket status.
-            // Tools in a carousel pocket get their real P number; tools with no
-            // pocket (removed or in spindle) are written as P0 so offsets persist.
-            if(pockets[idx].tool.tool_id >= 0)
-                write_pocket_line(file, &pockets[idx]);
-        }
-
-        vfs_close(file);
-    }
-
-    return ok;
-}
-
-static bool clearTools (void)
-{
-    uint_fast8_t idx;
-
-    for(idx = 0; idx < n_pockets; idx++) {
-        pockets[idx].tool.radius = 0.0f;
-        memset(&pockets[idx].tool.offset, 0, sizeof(coord_data_t));
-        if(!loaded) {
-            pockets[idx].pocket_id = -1;
-            pockets[idx].tool.tool_id = idx == 0 ? 0 : -1;
-        }
-    }
-
+    uint16_t new_cap = index_cap + 8;
+    tool_index_entry_t *p = realloc(tt_index, new_cap * sizeof(tool_index_entry_t));
+    if(!p)
+        return false;
+    tt_index     = p;
+    index_cap = new_cap;
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Carousel management - find the lowest free pocket number (>= 1)
-// ---------------------------------------------------------------------------
-
-static pocket_id_t find_free_pocket (void)
+static tool_index_entry_t *index_find (tool_id_t tool_id)
 {
-    uint_fast16_t idx;
-    pocket_id_t candidate;
+    for(uint16_t i = 0; i < n_tools; i++) {
+        if(tt_index[i].tool_id == tool_id)
+            return &tt_index[i];
+    }
+    return NULL;
+}
 
-    // Try every candidate pocket id starting at 1
-    for(candidate = 1; candidate < (pocket_id_t)n_pockets + 1; candidate++) {
+static bool index_upsert (tool_id_t tool_id, pocket_id_t pocket_id)
+{
+    tool_index_entry_t *e = index_find(tool_id);
+    if(e) {
+        e->pocket_id = pocket_id;
+        return true;
+    }
+    if(n_tools >= index_cap && !index_grow())
+        return false;
+    tt_index[n_tools].tool_id   = tool_id;
+    tt_index[n_tools].pocket_id = pocket_id;
+    n_tools++;
+    return true;
+}
+
+static void index_clear (void)
+{
+    n_tools = 0;
+}
+
+static uint16_t index_count_in_carousel (void)
+{
+    uint16_t count = 0;
+    for(uint16_t i = 0; i < n_tools; i++) {
+        if(tt_index[i].pocket_id >= 1)
+            count++;
+    }
+    return count;
+}
+
+static pocket_id_t index_find_free_pocket (void)
+{
+    for(pocket_id_t candidate = 1; candidate <= (pocket_id_t)(n_tools + 1); candidate++) {
         bool in_use = false;
-        for(idx = 0; idx < n_pockets; idx++) {
-            if(pockets[idx].pocket_id == candidate) {
+        for(uint16_t i = 0; i < n_tools; i++) {
+            if(tt_index[i].pocket_id == candidate) {
                 in_use = true;
                 break;
             }
@@ -216,358 +149,502 @@ static pocket_id_t find_free_pocket (void)
         if(!in_use)
             return candidate;
     }
-
-    return -1; // no free pocket found
-}
-
-// Find a slot in the pockets array that is logically empty (tool_id == -1).
-// Returns pointer to that slot, or NULL if the array is full.
-static tool_pocket_t *find_empty_slot (void)
-{
-    uint_fast16_t idx;
-
-    // Skip slot 0 — reserved for spindle / tool-in-hand
-    for(idx = 1; idx < n_pockets; idx++) {
-        if(pockets[idx].tool.tool_id < 0)
-            return &pockets[idx];
-    }
-
-    return NULL; // no empty slot; would need realloc
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Read one line from the file into buf. Returns true if a line was read.
+// ---------------------------------------------------------------------------
+static bool read_line (vfs_file_t *file, char *buf, size_t len)
+{
+    size_t idx = 0;
+    char c;
+
+    while(vfs_read(&c, 1, 1, file) == 1) {
+        if(c == '\n') {
+            buf[idx] = '\0';
+            if(idx > 0 && buf[idx-1] == '\r')
+                buf[idx-1] = '\0';
+            return true;
+        }
+        if(idx < len - 1)
+            buf[idx++] = c;
+    }
+
+    if(idx > 0) {
+        buf[idx] = '\0';
+        return true;
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Parse one line into a tool_pocket_t.
+// Returns true if a valid tool entry was parsed.
+// ---------------------------------------------------------------------------
+static bool parse_line (char *line, tool_pocket_t *out)
+{
+    if(!line || !*line || *line == ';' || *line == '\r' || *line == '\n')
+        return false;
+
+    memset(out, 0, sizeof(tool_pocket_t));
+    out->pocket_id    = -1;
+    out->tool.tool_id = -1;
+
+    char *param = strtok(line, " \t");
+    status_code_t status = Status_OK;
+
+    while(param && status == Status_OK) {
+
+        uint_fast8_t cc = 1;
+
+        switch(CAPS(*param)) {
+
+            case 'T':
+            {
+                uint32_t tool_id;
+                if((status = read_uint(param, &cc, &tool_id)) == Status_OK)
+                    out->tool.tool_id = (tool_id_t)tool_id;
+            }
+            break;
+
+            case 'P':
+            {
+                uint32_t pocket_id;
+                if((status = read_uint(param, &cc, &pocket_id)) == Status_OK)
+                    out->pocket_id = (pocket_id == 0) ? -1 : (pocket_id_t)pocket_id;
+            }
+            break;
+
+            case 'X':
+                if(!read_float(param, &cc, &out->tool.offset.values[X_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+
+            case 'Y':
+                if(!read_float(param, &cc, &out->tool.offset.values[Y_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+
+            case 'Z':
+                if(!read_float(param, &cc, &out->tool.offset.values[Z_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#ifdef A_AXIS
+            case 'A':
+                if(!read_float(param, &cc, &out->tool.offset.values[A_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#endif
+#ifdef B_AXIS
+            case 'B':
+                if(!read_float(param, &cc, &out->tool.offset.values[B_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#endif
+#ifdef C_AXIS
+            case 'C':
+                if(!read_float(param, &cc, &out->tool.offset.values[C_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#endif
+#ifdef U_AXIS
+            case 'U':
+                if(!read_float(param, &cc, &out->tool.offset.values[U_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#endif
+#ifdef V_AXIS
+            case 'V':
+                if(!read_float(param, &cc, &out->tool.offset.values[V_AXIS]))
+                    status = Status_GcodeValueOutOfRange;
+                break;
+#endif
+            case 'D':
+                if(!read_float(param, &cc, &out->tool.radius))
+                    status = Status_GcodeValueOutOfRange;
+                else
+                    out->tool.radius /= 2.0f;
+                break;
+
+            case ';':
+                strncpy(out->name, param + 1, sizeof(out->name) - 1);
+                while((param = strtok(NULL, " \t"))) {
+                    if(strlen(out->name) + strlen(param) + 1 <= sizeof(out->name) - 1) {
+                        if(*out->name)
+                            strcat(out->name, " ");
+                        strcat(out->name, param);
+                    }
+                }
+                while((param = strchr(out->name, '|')))
+                    *param = '%';
+                param = NULL;
+                break;
+        }
+
+        if(param)
+            param = strtok(NULL, " \t");
+    }
+
+    return status == Status_OK && out->tool.tool_id >= 0;
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild the RAM tt_index by scanning the file once.
+// ---------------------------------------------------------------------------
+static bool rebuild_index (void)
+{
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(!file)
+        return false;
+
+    index_clear();
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(file, line, sizeof(line))) {
+        if(parse_line(line, &entry))
+            index_upsert(entry.tool.tool_id, entry.pocket_id);
+    }
+
+    vfs_close(file);
+    grbl.tool_table.n_tools = n_tools;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Write one pocket entry as a line to an open file.
+// ---------------------------------------------------------------------------
+static void write_pocket_line (vfs_file_t *file, const tool_pocket_t *p)
+{
+    char buf[400], tmp[24];
+
+    uint16_t file_pocket = (p->pocket_id >= 1) ? (uint16_t)p->pocket_id : 0;
+    sprintf(buf, "P%u T%u", file_pocket, (uint16_t)p->tool.tool_id);
+
+    for(uint_fast8_t axis = 0; axis < N_AXIS; axis++) {
+        if(fabsf(p->tool.offset.values[axis]) > 0.0001f) {
+            sprintf(tmp, " %s%.3f", axis_letter[axis], p->tool.offset.values[axis]);
+            strcat(buf, tmp);
+        }
+    }
+
+    if(p->tool.radius != 0.0f) {
+        sprintf(tmp, " D%.3f", p->tool.radius * 2.0f);
+        strcat(buf, tmp);
+    }
+
+    if(*p->name) {
+        strcat(buf, " ;");
+        strcat(buf, p->name);
+    }
+
+    strcat(buf, "\n");
+    vfs_write(buf, strlen(buf), 1, file);
+}
+
+// ---------------------------------------------------------------------------
+// Rewrite the entire file, optionally overriding pocket_ids for specific
+// tools.  Uses a temp file to avoid any heap allocation — one line at a
+// time is read from the source, modified if it matches an override, and
+// written to the temp file.  The temp file is then renamed over the original.
+// Stack usage: one line buffer (300 bytes) + one tool_pocket_t (~200 bytes).
+// ---------------------------------------------------------------------------
+#define MAX_OVERRIDES 2
+
+typedef struct {
+    tool_id_t   tool_id;
+    pocket_id_t new_pocket_id;
+} pocket_override_t;
+
+static char filename_tmp[] = "/linuxcnc/tooltable.tmp";
+
+static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_overrides)
+{
+    vfs_file_t *src = vfs_open(filename, "r");
+    if(!src)
+        return false;
+
+    vfs_file_t *dst = vfs_open(filename_tmp, "w");
+    if(!dst) {
+        vfs_close(src);
+        return false;
+    }
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(src, line, sizeof(line))) {
+
+        if(!parse_line(line, &entry)) {
+            // Blank or comment line — skip (do not carry forward comments
+            // since the first-pass counter bug is gone and we never write them)
+            continue;
+        }
+
+        // Check if this tool has a pocket_id override
+        for(uint8_t oi = 0; oi < n_overrides; oi++) {
+            if(entry.tool.tool_id == overrides[oi].tool_id) {
+                entry.pocket_id = overrides[oi].new_pocket_id;
+                break;
+            }
+        }
+
+        write_pocket_line(dst, &entry);
+    }
+
+    vfs_close(src);
+    vfs_close(dst);
+
+    // Atomically replace original with temp file
+    if(vfs_rename(filename_tmp, filename) != 0) {
+        // rename failed — try to clean up temp file
+        vfs_unlink(filename_tmp);
+        return false;
+    }
+
+    rebuild_index();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Append a brand-new tool entry to the end of the file.
+// Avoids a full read-modify-write for the common $TCADD new-tool case.
+// ---------------------------------------------------------------------------
+static bool append_tool (const tool_pocket_t *p)
+{
+    vfs_file_t *file = vfs_open(filename, "a");
+    if(!file)
+        return false;
+
+    write_pocket_line(file, p);
+    vfs_close(file);
+
+    index_upsert(p->tool.tool_id, p->pocket_id);
+    grbl.tool_table.n_tools = n_tools;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// grbl.tool_table.get_tool - scan file for tool_id, return full entry.
+// The RAM tt_index is checked first so we never open the file for unknown tools.
+// ---------------------------------------------------------------------------
+static tool_table_entry_t *getTool (tool_id_t tool_id)
+{
+    static tool_table_entry_t result = {0};
+    static tool_pocket_t      found  = {0};
+
+    result.data = NULL;
+
+    tool_index_entry_t *ie = index_find(tool_id);
+    if(!ie)
+        return &result;
+
+    if(!settings.macro_atc_flags.random_toolchanger && ie->pocket_id < 1)
+        return &result;
+
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(!file)
+        return &result;
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(file, line, sizeof(line))) {
+        if(parse_line(line, &entry) && entry.tool.tool_id == tool_id) {
+            memcpy(&found, &entry, sizeof(tool_pocket_t));
+            result.data   = &found.tool;
+            result.pocket = found.pocket_id;
+            result.name   = found.name;
+            break;
+        }
+    }
+
+    vfs_close(file);
+    return &result;
+}
+
+// ---------------------------------------------------------------------------
+// grbl.tool_table.get_tool_by_idx - enumerate using RAM tt_index, fetch from file.
+// ---------------------------------------------------------------------------
+static tool_table_entry_t *getToolByIdx (uint32_t idx)
+{
+    if(idx >= n_tools) {
+        static tool_table_entry_t empty = {0};
+        empty.data = NULL;
+        return &empty;
+    }
+    return getTool(tt_index[idx].tool_id);
+}
+
+// ---------------------------------------------------------------------------
+// grbl.tool_table.set_tool - update offsets for an existing tool in the file.
+// Streams through the file line by line with no heap allocation.
+// ---------------------------------------------------------------------------
+static bool setTool (tool_data_t *tool_data)
+{
+    if(!tool_data || tool_data->tool_id < 0)
+        return false;
+
+    vfs_file_t *src = vfs_open(filename, "r");
+    if(!src)
+        return false;
+
+    vfs_file_t *dst = vfs_open(filename_tmp, "w");
+    if(!dst) {
+        vfs_close(src);
+        return false;
+    }
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(src, line, sizeof(line))) {
+        if(!parse_line(line, &entry))
+            continue;
+        // Replace offset data for the matching tool; preserve pocket and name
+        if(entry.tool.tool_id == tool_data->tool_id)
+            memcpy(&entry.tool, tool_data, sizeof(tool_data_t));
+        write_pocket_line(dst, &entry);
+    }
+
+    vfs_close(src);
+    vfs_close(dst);
+
+    if(vfs_rename(filename_tmp, filename) != 0) {
+        vfs_unlink(filename_tmp);
+        return false;
+    }
+
+    rebuild_index();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// grbl.tool_table.clear - zero offsets for all tools (tools remain in table).
+// Streams through the file line by line with no heap allocation.
+// ---------------------------------------------------------------------------
+static bool clearTools (void)
+{
+    vfs_file_t *src = vfs_open(filename, "r");
+    if(!src)
+        return false;
+
+    vfs_file_t *dst = vfs_open(filename_tmp, "w");
+    if(!dst) {
+        vfs_close(src);
+        return false;
+    }
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(src, line, sizeof(line))) {
+        if(!parse_line(line, &entry))
+            continue;
+        memset(&entry.tool.offset, 0, sizeof(coord_data_t));
+        entry.tool.radius = 0.0f;
+        write_pocket_line(dst, &entry);
+    }
+
+    vfs_close(src);
+    vfs_close(dst);
+
+    if(vfs_rename(filename_tmp, filename) != 0) {
+        vfs_unlink(filename_tmp);
+        return false;
+    }
+
+    rebuild_index();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Public carousel API
 // ---------------------------------------------------------------------------
 
 carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets)
 {
-    if(!loaded)
+    if(!fs_available)
         return CarouselOp_TableNotLoaded;
 
-    // Check if this tool is already known to the table
-    tool_pocket_t *existing = get_pocket(tool_id);
+    tool_index_entry_t *ie = index_find(tool_id);
 
-    if(existing && existing->pocket_id >= 0)
-        return CarouselOp_ToolAlreadyInPocket; // already in carousel
+    if(ie && ie->pocket_id >= 1)
+        return CarouselOp_ToolAlreadyInPocket;
 
-    // Count how many pockets are currently occupied
-    uint8_t used = 0;
-    for(uint32_t i = 0; i < n_pockets; i++) {
-        if(pockets[i].pocket_id >= 1)
-            used++;
-    }
-    if(max_pockets > 0 && used >= max_pockets)
+    if(max_pockets > 0 && index_count_in_carousel() >= max_pockets)
         return CarouselOp_NoPocketAvailable;
 
-    // Find a free carousel pocket number
-    pocket_id_t free_pocket = find_free_pocket();
+    pocket_id_t free_pocket = index_find_free_pocket();
     if(free_pocket < 0)
         return CarouselOp_NoPocketAvailable;
 
-    tool_pocket_t *slot;
-
-    if(existing) {
-        // Tool is known (has offsets) but has no pocket — just assign one.
-        // Offsets, name, radius are preserved as-is.
-        slot = existing;
+    if(ie) {
+        // Tool exists as P0 in file - update pocket via rewrite
+        pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = free_pocket };
+        if(!rewrite_file(&ov, 1))
+            return CarouselOp_WriteError;
     } else {
-        // Brand-new tool — find or grow a slot for it
-        slot = find_empty_slot();
-
-        if(slot == NULL) {
-            // Array is full — grow by one
-            uint32_t new_count = n_pockets + 1;
-            tool_pocket_t *new_pockets;
-
-            if(pockets == &pocket0) {
-                new_pockets = malloc(new_count * sizeof(tool_pocket_t));
-                if(new_pockets)
-                    memcpy(new_pockets, &pocket0, sizeof(tool_pocket_t));
-            } else {
-                new_pockets = realloc(pockets, new_count * sizeof(tool_pocket_t));
-            }
-
-            if(!new_pockets)
-                return CarouselOp_NoPocketAvailable;
-
-            pockets    = new_pockets;
-            n_pockets  = new_count;
-            slot       = &pockets[n_pockets - 1];
-        }
-
-        // Initialise the new slot with zeroed offsets
-        memset(slot, 0, sizeof(tool_pocket_t));
-        slot->tool.tool_id = tool_id;
-        slot->pocket_id    = -1; // will be set below
+        // Brand-new tool - append minimal entry
+        tool_pocket_t newentry = {0};
+        newentry.tool.tool_id = tool_id;
+        newentry.pocket_id    = free_pocket;
+        if(!append_tool(&newentry))
+            return CarouselOp_WriteError;
     }
-
-    slot->pocket_id = free_pocket;
-
-    grbl.tool_table.n_tools = n_pockets;
-
-    if(!writeTools(&slot->tool))
-        return CarouselOp_WriteError;
 
     return CarouselOp_OK;
 }
 
 carousel_op_result_t tooltable_carousel_remove (tool_id_t tool_id)
 {
-    if(!loaded)
+    if(!fs_available)
         return CarouselOp_TableNotLoaded;
 
-    tool_pocket_t *pocket = get_pocket(tool_id);
-
-    if(!pocket || pocket->pocket_id < 0)
+    tool_index_entry_t *ie = index_find(tool_id);
+    if(!ie || ie->pocket_id < 1)
         return CarouselOp_ToolNotFound;
 
-    // Only clear the carousel pocket assignment.
-    // Offsets, radius, and name are intentionally preserved so they survive
-    // the tool being out of the carousel and can be reused on $TCADD.
-    pocket->pocket_id = -1;
-
-    // writeTools will write this entry as P0, keeping offsets in the file.
-    if(!writeTools(&pocket->tool))
+    pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = -1 };
+    if(!rewrite_file(&ov, 1))
         return CarouselOp_WriteError;
 
     return CarouselOp_OK;
 }
 
 // ---------------------------------------------------------------------------
-// (rest of file unchanged from original)
+// onToolChanged - atomically update two pocket assignments after M6.
 // ---------------------------------------------------------------------------
-
-static status_code_t load_tools (sys_state_t state, char *args)
+static void onToolChanged (tool_data_t *tool)
 {
-    char c, buf[300] = "";
-    uint_fast8_t n_tools = 0, idx = 0, entry = 0, cc;
-    vfs_file_t *file;
-    status_code_t status = Status_GcodeUnusedWords;
+    if(settings.macro_atc_flags.random_toolchanger) {
 
-    args = filename;
+        pocket_override_t overrides[MAX_OVERRIDES];
+        uint8_t n_overrides = 0;
 
-    if((file = vfs_open(args, "r"))) {
+        // Incoming tool: clear its carousel pocket (now in spindle)
+        tool_index_entry_t *picked_up = index_find(tool->tool_id);
+        if(picked_up && picked_up->pocket_id >= 1)
+            overrides[n_overrides++] = (pocket_override_t){ tool->tool_id, -1 };
 
-        while(vfs_read(&c, 1, 1, file) == 1) {
-            if(c == ASCII_CR || c == ASCII_LF) {
-                if(*buf) {
-                    *buf = '\0';
-                    n_tools++;
-                }
-            } else
-                *buf = c;
-        }
+        // Outgoing tool: return it to its carousel pocket
+        if(m6_prev_tool_origin == M6Origin_Carousel && m6_prev_tool_pocket >= 1)
+            overrides[n_overrides++] = (pocket_override_t){ current_tool, m6_prev_tool_pocket };
 
-        if(n_tools && (n_tools + 1 > n_pockets || pockets == &pocket0)) {
-            if(pockets != &pocket0)
-                free(pockets);
-            if((pockets = malloc((n_tools + 1) * sizeof(tool_pocket_t))))
-                n_pockets = n_tools + 1;
-            else
-                n_pockets = 1;
-        }
+        m6_prev_tool_origin = M6Origin_Unknown;
+        m6_prev_tool_pocket = -1;
 
-        n_tools = 0;
-
-        if(n_pockets > 1) {
-
-            vfs_seek(file, 0);
-            memset(pockets, 0, n_pockets * sizeof(tool_pocket_t));
-
-            while(vfs_read(&c, 1, 1, file) == 1) {
-
-                if(c == ASCII_CR || c == ASCII_LF) {
-
-                    buf[idx] = '\0';
-
-                    if(!(*buf == '\0' || *buf == ';')) {
-
-                       char *param = strtok(buf, " ");
-                       tool_pocket_t pocket = { .pocket_id = -1, .tool.tool_id = -1 };
-
-                       status = Status_OK;
-
-                       while(param && status == Status_OK) {
-
-                           // Skip empty tokens produced by multiple consecutive spaces
-                           if(*param == '\0') {
-                               param = strtok(NULL, " ");
-                               continue;
-                           }
-
-                           cc = 1;
-
-                           switch(CAPS(*param)) {
-
-                               case 'T':
-                                   {
-                                       uint32_t tool_id;
-                                       if((status = read_uint(param, &cc, &tool_id)) == Status_OK)
-                                           pocket.tool.tool_id = (tool_id_t)tool_id;
-                                   }
-                                   break;
-
-                               case 'P':
-                                   {
-                                       uint32_t pocket_id;
-                                       if((status = read_uint(param, &cc, &pocket_id)) == Status_OK)
-                                           pocket.pocket_id = (pocket_id_t)pocket_id;
-                                   }
-                                   break;
-
-                               case 'X':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[X_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-
-                               case 'Y':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[Y_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-
-                               case 'Z':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[Z_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#ifdef A_AXIS
-                               case 'A':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[A_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#endif
-#ifdef B_AXIS
-                               case 'B':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[B_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#endif
-#ifdef C_AXIS
-                               case 'C':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[C_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#endif
-#ifdef U_AXIS
-                               case 'U':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[U_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#endif
-#ifdef V_AXIS
-                               case 'V':
-                                   if(!read_float(param, &cc, &pocket.tool.offset.values[V_AXIS]))
-                                       status = Status_GcodeValueOutOfRange;
-                                   break;
-#endif
-                               case 'D':
-                                   if(!read_float(param, &cc, &pocket.tool.radius))
-                                       status = Status_GcodeValueOutOfRange;
-                                   else
-                                       pocket.tool.radius /= 2.0f;
-                                   break;
-
-                               case ';':
-                                   strncpy(pocket.name, param + 1, sizeof(pocket.name) - 1);
-                                   while((param = strtok(NULL, " "))) {
-                                       if(strlen(pocket.name) + strlen(param) <= sizeof(pocket.name) - 2) {
-                                           if(*pocket.name)
-                                               strcat(pocket.name, " ");
-                                           strcat(pocket.name, param);
-                                       } else
-                                           continue;
-
-                                   }
-                                   while((param = strchr(pocket.name, '|'))) // make safe for reporting
-                                       *param = '%';
-                                   break;
-                           }
-
-                           param = strtok(NULL, " ");
-                       }
-
-                       // Accept P0 as "tool known but not in a carousel pocket".
-                       // pocket_id is stored as -1 internally; P0 is only a file convention.
-                       if(pocket.pocket_id == 0)
-                           pocket.pocket_id = -1;
-
-                       if(status == Status_OK && pocket.tool.tool_id >= 0) {
-
-                           if(pocket.pocket_id >= 1 && settings.macro_atc_flags.random_toolchanger) {
-                               entry = pocket.pocket_id;
-                           } else
-                               entry++;
-
-                           if(entry < n_pockets) {
-                               n_tools++;
-                               memcpy(&pockets[entry], &pocket, sizeof(tool_pocket_t));
-                           }
-                       }
-                    }
-
-                    idx = 0;
-
-                } else if(idx < sizeof(buf))
-                    buf[idx++] = c;
-            }
-        } else {
-            // n_tools > 0: not enough memory for tool table - raise alarm?
-            pockets = &pocket0;
-        }
-
-        loaded = n_tools > 0;
-
-        vfs_close(file);
+        if(n_overrides > 0)
+            rewrite_file(overrides, n_overrides);
     }
 
-    grbl.tool_table.n_tools = loaded ? n_pockets : 0;
+    current_tool = tool->tool_id;
 
-    return status == Status_OK ? Status_OK : Status_FileReadError;
-}
-
-// ---------------------------------------------------------------------------
-// Ensure the tooltable directory and file exist on the mounted filesystem.
-// Called from loadTools() on every VFS mount event.  If the directory or
-// file are missing they are created so that the first $TCADD command has
-// somewhere to write without error.
-// ---------------------------------------------------------------------------
-static void ensure_tooltable_exists (void)
-{
-    // Check whether the file already exists by attempting to open it
-    vfs_file_t *file = vfs_open(filename, "r");
-    if(file) {
-        // File exists — nothing to do
-        vfs_close(file);
-        return;
-    }
-
-    // File not found — try to create the directory first (ignore error if
-    // it already exists; vfs_mkdir behaviour varies by filesystem driver)
-    vfs_mkdir("/linuxcnc");
-
-    // Create an empty tooltable file.  An empty file is valid — load_tools()
-    // will simply leave n_tools at 0 and loaded as false until entries are
-    // added via $TCADD.
-    file = vfs_open(filename, "w");
-    if(file) {
-        // Write a header comment so the file is recognisable in a text editor
-        const char *header = "; grblHAL tooltable - LinuxCNC format\n"
-                             "; P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]\n"
-                             "; P0 entries are tools known to the system but not currently in the carousel.\n";
-        vfs_write(header, strlen(header), 1, file);
-        vfs_close(file);
-        report_message("Tooltable: created /linuxcnc/tooltable.tbl", Message_Info);
-    } else {
-        report_message("Tooltable: failed to create /linuxcnc/tooltable.tbl", Message_Warning);
-    }
-}
-
-static void loadTools (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
-{
-    ensure_tooltable_exists();
-    load_tools(state_get(), filename);
-
-    if(on_vfs_mount)
-        on_vfs_mount(path, fs, mode);
+    if(on_tool_changed)
+        on_tool_changed(tool);
 }
 
 static void onToolSelect (tool_data_t *tool, bool next)
@@ -579,100 +656,60 @@ static void onToolSelect (tool_data_t *tool, bool next)
         tool_select(tool, next);
 }
 
-static void onToolChanged (tool_data_t *tool)
-{
-    if(settings.macro_atc_flags.random_toolchanger) {
-
-        // ── Incoming tool: remove it from the carousel ─────────────────────
-        // The tool is now in the spindle; its carousel pocket is free.
-        // Offsets and name are preserved (pocket_id cleared to -1 only).
-        tool_pocket_t *picked_up = get_pocket(tool->tool_id);
-        if(picked_up && picked_up->pocket_id >= 0)
-            picked_up->pocket_id = -1;
-
-        // ── Outgoing tool: return it to the carousel if it came from one ───
-        // The ATC plugin calls tooltable_set_m6_prev() before enqueueing its
-        // macro; we consume those values here.
-        // When $TCADD / $TCRM are used manually, origin stays M6Origin_Unknown
-        // and we skip this block entirely.
-        tool_pocket_t *returned = NULL;
-        if(m6_prev_tool_origin == M6Origin_Carousel && m6_prev_tool_pocket >= 1) {
-            returned = get_pocket(current_tool); // current_tool = outgoing tool id
-            if(returned)
-                returned->pocket_id = m6_prev_tool_pocket;
-        }
-
-        // Reset M6 state for next change
-        m6_prev_tool_origin = M6Origin_Unknown;
-        m6_prev_tool_pocket = -1;
-
-        // Single write covers both updates
-        tool_data_t *anchor = picked_up ? &picked_up->tool
-                            : returned  ? &returned->tool
-                            : NULL;
-        if(anchor)
-            writeTools(anchor);
-    }
-
-    current_tool = tool->tool_id;
-
-    if(on_tool_changed)
-        on_tool_changed(tool);
-}
-
-static void onReportOptions (bool newopt)
-{
-    on_report_options(newopt);
-
-    if(!newopt)
-        report_plugin("Tool table", "0.03");
-}
-
+// ---------------------------------------------------------------------------
+// $TTLIST - print tool table to console directly from file.
+// ---------------------------------------------------------------------------
 static status_code_t list_tools (sys_state_t state, char *args)
 {
-    uint_fast16_t idx;
-    char buf[120], tmp[32];
-    uint_fast8_t axis;
+    hal.stream.write("[TOOLTABLE: P=pocket T=tool offsets diameter name]" ASCII_EOL);
+
+    if(!fs_available || n_tools == 0) {
+        hal.stream.write("[TOOL: table is empty]" ASCII_EOL);
+        return Status_OK;
+    }
+
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(!file) {
+        hal.stream.write("[TOOL: file not accessible]" ASCII_EOL);
+        return Status_FileReadError;
+    }
+
+    char line[300], buf[200], tmp[24];
+    tool_pocket_t entry;
     bool any = false;
 
-    // Header
-    hal.stream.write("[TOOLTABLE: P=pocket T=tool Z=offset D=diameter name]" ASCII_EOL);
+    while(read_line(file, line, sizeof(line))) {
 
-    for(idx = 1; idx < n_pockets; idx++) {
-
-        const tool_pocket_t *p = &pockets[idx];
-
-        // Skip uninitialized slots (tool_id == 0 from memset) and
-        // explicitly empty slots (tool_id == -1)
-        if(p->tool.tool_id <= 0)
+        if(!parse_line(line, &entry))
             continue;
 
         any = true;
 
-        // Pocket — P0 means tool is known but not in the carousel
-        uint16_t file_pocket = (p->pocket_id >= 1) ? (uint16_t)p->pocket_id : 0;
-        sprintf(buf, "[TOOL: P%u T%u", file_pocket, (uint16_t)p->tool.tool_id);
+        uint16_t file_pocket = (entry.pocket_id >= 1) ? (uint16_t)entry.pocket_id : 0;
+        sprintf(buf, "[TOOL: P%u T%u", file_pocket, (uint16_t)entry.tool.tool_id);
 
-        for(axis = 0; axis < N_AXIS; axis++) {
-            if(fabsf(p->tool.offset.values[axis]) > 0.0001f) {
-                sprintf(tmp, " %s%.3f", axis_letter[axis], p->tool.offset.values[axis]);
+        for(uint_fast8_t axis = 0; axis < N_AXIS; axis++) {
+            if(fabsf(entry.tool.offset.values[axis]) > 0.0001f) {
+                sprintf(tmp, " %s%.3f", axis_letter[axis], entry.tool.offset.values[axis]);
                 strcat(buf, tmp);
             }
         }
 
-        if(p->tool.radius != 0.0f) {
-            sprintf(tmp, " D%.3f", p->tool.radius * 2.0f);
+        if(entry.tool.radius != 0.0f) {
+            sprintf(tmp, " D%.3f", entry.tool.radius * 2.0f);
             strcat(buf, tmp);
         }
 
-        if(*p->name) {
+        if(*entry.name) {
             strcat(buf, " ;");
-            strcat(buf, p->name);
+            strcat(buf, entry.name);
         }
 
         strcat(buf, "]" ASCII_EOL);
         hal.stream.write(buf);
     }
+
+    vfs_close(file);
 
     if(!any)
         hal.stream.write("[TOOL: table is empty]" ASCII_EOL);
@@ -680,16 +717,72 @@ static status_code_t list_tools (sys_state_t state, char *args)
     return Status_OK;
 }
 
+// ---------------------------------------------------------------------------
+// $TTLOAD - reload tt_index from file
+// ---------------------------------------------------------------------------
+static status_code_t load_tools (sys_state_t state, char *args)
+{
+    if(!fs_available)
+        return Status_FileReadError;
+
+    return rebuild_index() ? Status_OK : Status_FileReadError;
+}
+
+// ---------------------------------------------------------------------------
+// File management
+// ---------------------------------------------------------------------------
+static void ensure_tooltable_exists (void)
+{
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(file) {
+        vfs_close(file);
+        return;
+    }
+
+    vfs_mkdir("/linuxcnc");
+
+    file = vfs_open(filename, "w");
+    if(file) {
+        vfs_close(file);
+        report_message("Tooltable: created /linuxcnc/tooltable.tbl", Message_Info);
+    } else {
+        report_message("Tooltable: failed to create /linuxcnc/tooltable.tbl", Message_Warning);
+    }
+}
+
+static void loadTools (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+{
+    fs_available = true;
+    ensure_tooltable_exists();
+    rebuild_index();
+
+    if(on_vfs_mount)
+        on_vfs_mount(path, fs, mode);
+}
+
+// ---------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------
+static void onReportOptions (bool newopt)
+{
+    on_report_options(newopt);
+    if(!newopt)
+        report_plugin("Tool table", "0.04");
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
 void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
-        { "TTLOAD", load_tools, {}, { .str = "(re)load tool table" } },
+        { "TTLOAD", load_tools, {}, { .str = "(re)load tool table from SD card" } },
         { "TTLIST", list_tools, {}, { .str = "List all tools in the tool table" } }
-     };
+    };
 
     static sys_commands_t tt_commands = {
         .n_commands = sizeof(tt_command_list) / sizeof(sys_command_t),
-        .commands = tt_command_list
+        .commands   = tt_command_list
     };
 
     on_vfs_mount = vfs.on_mount;
@@ -704,15 +797,13 @@ void tooltable_init (void)
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
-    grbl.tool_table.n_tools = 1;
-    grbl.tool_table.get_tool = getTool;
-    grbl.tool_table.set_tool = writeTools;
+    grbl.tool_table.n_tools         = 0;
+    grbl.tool_table.get_tool        = getTool;
+    grbl.tool_table.set_tool        = setTool;
     grbl.tool_table.get_tool_by_idx = getToolByIdx;
-    grbl.tool_table.clear = clearTools;
+    grbl.tool_table.clear           = clearTools;
 
     system_register_commands(&tt_commands);
-
-    clearTools();
 
 #if SDCARD_ENABLE
     sdcard_early_mount();
