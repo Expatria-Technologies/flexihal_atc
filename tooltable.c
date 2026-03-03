@@ -657,6 +657,33 @@ static void onToolSelect (tool_data_t *tool, bool next)
 }
 
 // ---------------------------------------------------------------------------
+// $TTINDEX - print the RAM index to console for debugging.
+// Shows only what is in the lightweight in-memory index (tool_id + pocket_id),
+// not the full tool data from the file.
+static status_code_t list_index (sys_state_t state, char *args)
+{
+    char buf[60];
+
+    sprintf(buf, "[TTINDEX: %u tool(s) in index, capacity %u]" ASCII_EOL, n_tools, index_cap);
+    hal.stream.write(buf);
+
+    if(n_tools == 0) {
+        hal.stream.write("[TTINDEX: empty]" ASCII_EOL);
+        return Status_OK;
+    }
+
+    for(uint16_t i = 0; i < n_tools; i++) {
+        uint16_t file_pocket = (tt_index[i].pocket_id >= 1) ? (uint16_t)tt_index[i].pocket_id : 0;
+        sprintf(buf, "[TTINDEX: [%u] T%d P%u]" ASCII_EOL,
+                i,
+                (int)tt_index[i].tool_id,
+                file_pocket);
+        hal.stream.write(buf);
+    }
+
+    return Status_OK;
+}
+
 // $TTLIST - print tool table to console directly from file.
 // ---------------------------------------------------------------------------
 static status_code_t list_tools (sys_state_t state, char *args)
@@ -777,7 +804,8 @@ void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
         { "TTLOAD", load_tools, {}, { .str = "(re)load tool table from SD card" } },
-        { "TTLIST", list_tools, {}, { .str = "List all tools in the tool table" } }
+        { "TTLIST", list_tools, {}, { .str = "List all tools in the tool table" } },
+        { "TTINDEX", list_index, {}, { .str = "Print the RAM index (debug)" } }
     };
 
     static sys_commands_t tt_commands = {
