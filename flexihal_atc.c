@@ -918,7 +918,7 @@ static void atc_settings_load (void)
 
     settings.macro_atc_flags.random_toolchanger = 1;
 
-    //tooltable_setpockets(atc.number_of_pockets);
+    grbl.tool_table.n_tools = atc.number_of_pockets;
     
     on_tool_change = hal.tool.change;
     hal.tool.change = tool_change;    

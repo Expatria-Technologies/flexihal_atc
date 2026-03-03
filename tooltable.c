@@ -471,12 +471,15 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
 // ---------------------------------------------------------------------------
 static tool_table_entry_t *getToolByIdx (uint32_t idx)
 {
-    if(idx >= n_tools) {
-        static tool_table_entry_t empty = {0};
+    // grblHAL core (report.c) calls this 1-based: idx runs from 1 to n_tools.
+    // Convert to 0-based before looking up in tt_index.
+    static tool_table_entry_t empty = {0};
+
+    if(idx == 0 || idx > n_tools) {
         empty.data = NULL;
         return &empty;
     }
-    return getTool(tt_index[idx].tool_id);
+    return getTool(tt_index[idx - 1].tool_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -825,7 +828,7 @@ void tooltable_init (void)
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
-    grbl.tool_table.n_tools         = 0;
+    grbl.tool_table.n_tools         = 9999;
     grbl.tool_table.get_tool        = getTool;
     grbl.tool_table.set_tool        = setTool;
     grbl.tool_table.get_tool_by_idx = getToolByIdx;
