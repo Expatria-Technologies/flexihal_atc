@@ -605,6 +605,49 @@ const char *tooltable_get_name (tool_id_t tool_id)
     return e->name;
 }
 
+// Register a tool in the tooltable at P0 (not in the carousel).
+// If the tool already exists its name is updated if name is non-NULL and non-empty.
+// Returns CarouselOp_ToolAlreadyInPocket if the tool already has a pocket assigned —
+// use $TCADD to move an existing P0 tool into the carousel instead.
+carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *name)
+{
+    if(!fs_available)
+        return CarouselOp_TableNotLoaded;
+
+    tool_index_entry_t *ie = index_find(tool_id);
+
+    if(ie && ie->pocket_id >= 1)
+        return CarouselOp_ToolAlreadyInPocket;   // already in carousel, use $TCREG not applicable
+
+    if(ie) {
+        // Tool exists as P0 — update name only if one was provided
+        if(name && *name) {
+            pocket_override_t ov = {0};
+            ov.tool_id       = tool_id;
+            ov.new_pocket_id = 0;   // keep at P0
+            strncpy(ov.name, name, sizeof(ov.name) - 1);
+            ov.name[sizeof(ov.name) - 1] = '\0';
+            if(!rewrite_file(&ov, 1))
+                return CarouselOp_WriteError;
+        }
+        // Tool already registered at P0 with no name change — nothing to do
+        return CarouselOp_OK;
+    }
+
+    // Brand-new tool — append as P0
+    tool_pocket_t newentry = {0};
+    newentry.tool.tool_id = tool_id;
+    newentry.pocket_id    = 0;
+    if(name && *name) {
+        strncpy(newentry.name, name, sizeof(newentry.name) - 1);
+        newentry.name[sizeof(newentry.name) - 1] = '\0';
+    }
+    if(!append_tool(&newentry))
+        return CarouselOp_WriteError;
+
+    return CarouselOp_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Public carousel API
 // ---------------------------------------------------------------------------

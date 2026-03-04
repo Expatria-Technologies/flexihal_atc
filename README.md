@@ -38,6 +38,7 @@ The drawbar cannot be opened while the spindle is running. The spindle cannot be
 | Command | Description |
 |---------|-------------|
 | `$TCADD [Tn] [;name]` | Add tool to the carousel. Assigns the next free pocket. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. Existing tool offsets are preserved. |
+| `$TCREG [Tn] [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered, updates the name if one is given. If the tool is already in the carousel, reports an error. |
 | `$TCRM Tn` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. |
 
 ### Tool Measurement

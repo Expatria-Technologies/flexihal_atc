@@ -51,6 +51,11 @@ void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket);
 // Returns NULL if the tool is not indexed or has no name.
 const char *tooltable_get_name (tool_id_t tool_id);
 
+// Register a tool in the tooltable at P0 (not in the carousel).
+// If the tool already exists its name is updated if name is non-NULL.
+// If the tool already has a pocket assigned, returns CarouselOp_ToolAlreadyInPocket.
+carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *name);
+
 // Add a tool to the carousel.
 // Finds the lowest-numbered free pocket, assigns the tool to it, and
 // persists the change to the tooltable file.

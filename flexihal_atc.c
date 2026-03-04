@@ -377,6 +377,85 @@ static status_code_t carousel_add (sys_state_t state, char *args)
 #endif
 }
 
+// $TCREG [Tn] [;name] — Register a tool in the tooltable at P0 (not in the carousel).
+//
+// Usage:
+//   $TCREG T3            register tool 3 at P0 (no pocket assignment)
+//   $TCREG T3 ;12mm EM   register tool 3 with a description
+//   $TCREG               use current spindle tool
+//
+// If the tool is already in the carousel, reports an error — use $TCADD for that.
+// If the tool is already registered at P0, updates the name if one is given.
+
+static status_code_t carousel_register (sys_state_t state, char *args)
+{
+#if TOOLTABLE_ENABLE != 2
+    report_message("TCREG requires TOOLTABLE_ENABLE=2", Message_Warning);
+    return Status_InvalidStatement;
+#else
+    if(state_get() != STATE_IDLE) {
+        report_message("TCREG: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    uint32_t tool_id;
+    const char *name = NULL;
+
+    if(!args || !*args) {
+        tool_id = (uint32_t)gc_state.tool->tool_id;
+        if(tool_id == 0) {
+            report_message("TCREG: no tool selected and no argument given", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+    } else {
+        if(*args != 'T' && *args != 't') {
+            report_message("TCREG: usage is $TCREG Tn [;name]  (or $TCREG to use current tool)", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        uint_fast8_t cc = 1;
+        status_code_t parse_status = read_uint(args, &cc, &tool_id);
+        if(parse_status != Status_OK) {
+            report_message("TCREG: invalid tool number", Message_Warning);
+            return parse_status;
+        }
+        while(args[cc] == ' ' || args[cc] == '\t') cc++;
+        if(args[cc] == ';')
+            name = &args[cc + 1];
+    }
+
+    carousel_op_result_t result = tooltable_register_tool((tool_id_t)tool_id, name);
+
+    switch(result) {
+        case CarouselOp_OK:
+            {
+                char msg[80];
+                if(name && *name)
+                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0 (%s)", (unsigned long)tool_id, name);
+                else
+                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_ToolAlreadyInPocket:
+            report_message("TCREG: tool is already in the carousel — use $TCADD to reassign", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_TableNotLoaded:
+            report_message("TCREG: tool table not loaded", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_WriteError:
+            report_message("TCREG: failed to write tool table", Message_Warning);
+            return Status_FileReadError;
+
+        default:
+            report_message("TCREG: unknown error", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+    }
+#endif
+}
+
 // $TCRM Tn  — Remove a tool from the carousel (mark its pocket as empty).
 //
 // Usage:
@@ -721,11 +800,12 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
 // ---------------------------------------------------------------------------
 
 const sys_command_t atc_command_list[] = {
-    {"DRBO",      drawbar_open,     { .noargs = On  }, { .str = "Open the drawbar" }},
-    {"DRBC",      drawbar_close,    { .noargs = On  }, { .str = "Close the drawbar" }},
-    {"TCADD",     carousel_add,     { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
-    {"TCRM",      carousel_remove,  { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
-    {"TCMEASURE", carousel_measure, { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
+    {"DRBO",      drawbar_open,       { .noargs = On  }, { .str = "Open the drawbar" }},
+    {"DRBC",      drawbar_close,      { .noargs = On  }, { .str = "Close the drawbar" }},
+    {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn [;name]" }},
+    {"TCREG",     carousel_register,  { .noargs = Off }, { .str = "Register tool in tooltable at P0: $TCREG Tn [;name]" }},
+    {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
+    {"TCMEASURE", carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
 };
 
 static sys_commands_t atc_commands = {
