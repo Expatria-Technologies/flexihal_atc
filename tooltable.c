@@ -66,8 +66,8 @@ static tool_index_entry_t *tt_index   = NULL;   // lightweight RAM index
 static tool_id_t         current_tool = 0;      // tool currently in spindle
 static char              filename[]   = "/linuxcnc/tooltable.tbl";
 
-// M6 tool-change state - set by ATC plugin, consumed in onToolChanged()
-static m6_tool_origin_t  m6_prev_tool_origin = M6Origin_Unknown;
+// M6 tool-change state - set by ATC plugin, consumed in onToolChanged().
+// Holds the carousel pocket the outgoing tool came from, or -1 if it was hand-loaded.
 static pocket_id_t       m6_prev_tool_pocket = -1;
 
 static tool_select_ptr       tool_select;
@@ -78,9 +78,8 @@ static on_report_options_ptr on_report_options;
 // ---------------------------------------------------------------------------
 // Public: called by ATC plugin before enqueueing a macro
 // ---------------------------------------------------------------------------
-void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket)
+void tooltable_set_m6_prev (pocket_id_t pocket)
 {
-    m6_prev_tool_origin = origin;
     m6_prev_tool_pocket = pocket;
 }
 
@@ -739,10 +738,9 @@ static void onToolChanged (tool_data_t *tool)
             overrides[n_overrides++] = (pocket_override_t){ tool->tool_id, -1 };
 
         // Outgoing tool: return it to its carousel pocket
-        if(m6_prev_tool_origin == M6Origin_Carousel && m6_prev_tool_pocket >= 1)
+        if(m6_prev_tool_pocket >= 1)
             overrides[n_overrides++] = (pocket_override_t){ current_tool, m6_prev_tool_pocket };
 
-        m6_prev_tool_origin = M6Origin_Unknown;
         m6_prev_tool_pocket = -1;
 
         if(n_overrides > 0)

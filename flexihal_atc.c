@@ -576,7 +576,7 @@ static status_code_t atc_macro_on_error (status_code_t status)
     report_message(msg, Message_Warning);
 
     // Reset tooltable dirty state so onToolChanged is a no-op
-    tooltable_set_m6_prev(M6Origin_Unknown, -1);
+    tooltable_set_m6_prev(-1);
 
     atc_macro_end();
     grbl.report.status_message(status);
@@ -586,7 +586,7 @@ static status_code_t atc_macro_on_error (status_code_t status)
 static status_code_t atc_macro_on_eof (vfs_file_t *file, status_code_t status)
 {
     if(status != Status_OK)
-        tooltable_set_m6_prev(M6Origin_Unknown, -1);
+        tooltable_set_m6_prev(-1);
 
     atc_macro_end();
     return status;
@@ -652,9 +652,9 @@ static status_code_t tool_change (parser_state_t *parser_state)
     // Tell tooltable.c about the outgoing tool so onToolChanged() can
     // return it to the correct carousel pocket on completion.
     if(outgoing_pocket >= 1)
-        tooltable_set_m6_prev(M6Origin_Carousel, outgoing_pocket);
+        tooltable_set_m6_prev(outgoing_pocket);
     else
-        tooltable_set_m6_prev(M6Origin_Manual, -1);
+        tooltable_set_m6_prev(-1);
 
     status_code_t status;
 
@@ -683,7 +683,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
             ngc_param_set(4902, (float)outgoing_pocket);
             status = atc_macro_start("/linuxcnc/atc_return.ngc");
             if(status != Status_OK) {
-                tooltable_set_m6_prev(M6Origin_Unknown, -1);
+                tooltable_set_m6_prev(-1);
                 return status;
             }
             // Wait for atc_return.ngc to complete before proceeding
@@ -691,7 +691,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
             system_set_exec_state_flag(EXEC_TOOL_CHANGE);
             protocol_execute_realtime();
             if(ABORTED) {
-                tooltable_set_m6_prev(M6Origin_Unknown, -1);
+                tooltable_set_m6_prev(-1);
                 return Status_Reset;
             }
         } else {
@@ -701,7 +701,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
         // G30 transit + optional atc_pause.ngc hook + STATE_TOOL_CHANGE pause + probe
         status = tc_manual_tool_change(parser_state);
         if(status != Status_OK) {
-            tooltable_set_m6_prev(M6Origin_Unknown, -1);
+            tooltable_set_m6_prev(-1);
             return status;
         }
 
@@ -710,7 +710,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
     }
 
     if(status != Status_OK) {
-        tooltable_set_m6_prev(M6Origin_Unknown, -1);
+        tooltable_set_m6_prev(-1);
         return status;
     }
 

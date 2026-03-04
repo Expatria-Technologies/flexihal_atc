@@ -38,7 +38,6 @@ The drawbar cannot be opened while the spindle is running. The spindle cannot be
 | Command | Description |
 |---------|-------------|
 | `$TCADD [Tn] [;name]` | Add tool to the carousel. Assigns the next free pocket. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. Existing tool offsets are preserved. |
-| `$TCREG [Tn] [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered, updates the name if one is given. If the tool is already in the carousel, reports an error. |
 | `$TCRM Tn` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. |
 
 ### Tool Measurement
@@ -61,7 +60,7 @@ The following macro files must be present on the filesystem at `/linuxcnc/`:
 |------|---------|
 | `atc_change.ngc` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then measures |
 | `atc_return.ngc` | Returns current tool to its carousel pocket (used when incoming tool is not in carousel) |
-| `atc_config.macro` | Sets machine geometry parameters — run once after homing |
+| `atc_config.ngc` | Sets machine geometry parameters — run once after homing |
 
 The following file is **optional**:
 
@@ -70,8 +69,6 @@ The following file is **optional**:
 | `atc_pause.ngc` | Operator notification hook — runs after the machine arrives at the manual change position, before the `STATE_TOOL_CHANGE` pause. Use for lights, buzzers, or display messages. If absent, it is silently skipped. |
 
 If any **required** macro file is missing, M6 will report a warning and abort rather than leaving the machine in an undefined state.
-
-> **Note:** Do not add `$TCMEASURE` to `atc_pause.ngc`. Measurement is handled automatically by the plugin after the operator presses cycle start.
 
 ### Parameters Set by Plugin
 
@@ -85,7 +82,7 @@ The plugin sets the following numbered NGC parameters before starting a macro:
 
 ### Machine Geometry Parameters
 
-The following numbered parameters must be set to match your machine before any tool change runs. The provided `atc_config.macro` is the recommended place to set these — run it once after homing:
+The following numbered parameters must be set to match your machine before any tool change runs. The provided `atc_config.ngc` is the recommended place to set these — run it once at startup:
 
 | Parameter | Description |
 |-----------|-------------|
@@ -95,22 +92,6 @@ The following numbered parameters must be set to match your machine before any t
 | `#4913` | Z start height — just above pocket (machine coordinates) |
 | `#4914` | Z engage height — tool fully seated in pocket (machine coordinates) |
 | `#4915` | Z engagement feed rate |
-
-### Running atc_config.macro
-
-grblHAL does not support `O<path> call` syntax for running files by path. Instead, `atc_config.macro` must be placed on the SD card named as `P<n>.macro` where `<n>` is an integer ≥ 100 of your choosing (e.g. `P200.macro`), then called from the MDI or a startup block:
-
-```gcode
-G65 P200
-```
-
-To run it automatically on every boot, assign it to a startup block:
-
-```
-$N0=G65P200
-```
-
-This ensures your geometry parameters are always set after a reset or power cycle.
 
 The manual tool change position is configured via **G30** (standard grblHAL mechanism) rather than NGC parameters. Set G30 with `G30.1` after jogging to your preferred change position. The plugin moves to G30 before pausing if `tool_change_at_g30` is enabled in grblHAL settings.
 
@@ -126,7 +107,7 @@ M6 behaviour then depends on whether the requested tool is in the carousel:
 **Tool is not in the carousel:**
 If the outgoing tool came from the carousel, `atc_return.ngc` runs first to return it. The machine then moves to home Z, optionally moves to G30 for operator access, and runs `atc_pause.ngc` (if present). The plugin then enters `STATE_TOOL_CHANGE` and waits for the operator to load the tool and press cycle start. Once resumed, the new tool is probed and TLO is set automatically.
 
-After any M6 the tooltable is updated automatically: the incoming tool's pocket is cleared (it is now in the spindle) and the outgoing tool's pocket is restored (it has been returned to the carousel).
+After M6 completes the tooltable is updated to reflect the new physical state: the incoming tool's pocket is cleared to P0 (it is now in the spindle, not the carousel). If the outgoing tool originally came from the carousel, its pocket assignment is also restored to its original slot. If the outgoing tool was hand-loaded (P0), its tooltable entry is left unchanged.
 
 ### Tool Name Notification
 

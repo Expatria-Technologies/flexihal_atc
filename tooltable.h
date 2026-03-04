@@ -33,19 +33,11 @@ typedef enum {
     CarouselOp_TableNotLoaded       // tooltable not yet loaded
 } carousel_op_result_t;
 
-// Origin of the tool that was in the spindle before an M6 change.
-// Set by the ATC plugin in hal.tool.change; consumed by tooltable in
-// onToolChanged() to decide whether to return the outgoing tool to a pocket.
-typedef enum {
-    M6Origin_Unknown  = 0, // no M6 in progress / not determined
-    M6Origin_Carousel,     // outgoing tool came from the carousel
-    M6Origin_Manual        // outgoing tool was hand-loaded
-} m6_tool_origin_t;
-
-// Called by the ATC plugin's hal.tool.change handler to record the origin
-// and original carousel pocket of the tool being replaced.
-// Pass pocket = -1 when origin is M6Origin_Manual.
-void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket);
+// Called by the ATC plugin's hal.tool.change handler to record the carousel
+// pocket of the outgoing tool before M6 motion begins.
+// Pass pocket = -1 if the outgoing tool was hand-loaded (not from the carousel).
+// onToolChanged() uses this to restore the pocket assignment on completion.
+void tooltable_set_m6_prev (pocket_id_t pocket);
 
 // Return the name/comment string for a tool from the RAM index.
 // Returns NULL if the tool is not indexed or has no name.
