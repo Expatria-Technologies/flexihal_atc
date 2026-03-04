@@ -280,10 +280,12 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 // Carousel management commands
 // ---------------------------------------------------------------------------
 
-// $TCADD Tn  — Add the tool currently in the spindle to a free carousel pocket.
+// $TCADD Tn [;name]  — Add the tool currently in the spindle to a free carousel pocket.
 //
 // Usage:
-//   $TCADD T3    register tool 3 in the next free pocket
+//   $TCADD T3            register tool 3 in the next free pocket
+//   $TCADD T3 ;12mm EM   register tool 3 with a description
+//   $TCADD               use current spindle tool
 //
 // The machine must be IDLE and a tool must be present in the spindle.
 // The tooltable plugin assigns the pocket number automatically.
@@ -300,9 +302,10 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         return Status_InvalidStatement;
     }
 
-    // Parse tool number from args (expect "Tn").
+    // Parse tool number from args (expect "Tn [;name]").
     // If no argument is given, default to the tool currently in the spindle.
     uint32_t tool_id;
+    const char *name = NULL;
 
     if(!args || !*args) {
         tool_id = (uint32_t)gc_state.tool->tool_id;
@@ -312,7 +315,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         }
     } else {
         if(*args != 'T' && *args != 't') {
-            report_message("TCADD: usage is $TCADD Tn  (or $TCADD to use current tool)", Message_Warning);
+            report_message("TCADD: usage is $TCADD Tn [;name]  (or $TCADD to use current tool)", Message_Warning);
             return Status_BadNumberFormat;
         }
         uint_fast8_t cc = 1;
@@ -321,6 +324,10 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             report_message("TCADD: invalid tool number", Message_Warning);
             return parse_status;
         }
+        // Advance past whitespace and look for optional ";name"
+        while(args[cc] == ' ' || args[cc] == '\t') cc++;
+        if(args[cc] == ';')
+            name = &args[cc + 1];   // point past the semicolon
     }
 
     // Optional: check that a tool is physically present in the spindle
@@ -332,7 +339,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         }
     }
 
-    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets);
+    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets, name);
 
     switch(result) {
         case CarouselOp_OK:
@@ -984,7 +991,7 @@ static atc_status_t atc_get_state (void)
 }
 
 void atc_init (void)
-{    
+{
     protocol_enqueue_foreground_task(report_info, "FlexiHAL ATC plugin trying to initialize!");
 
     bool ok = (n_input_ports = ioports_available(Port_Digital, Port_Input));

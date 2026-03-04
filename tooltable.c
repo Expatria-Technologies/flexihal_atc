@@ -378,6 +378,7 @@ static void write_pocket_line (vfs_file_t *file, const tool_pocket_t *p)
 typedef struct {
     tool_id_t   tool_id;
     pocket_id_t new_pocket_id;
+    char        name[sizeof(((tool_pocket_t*)0)->name)];  // optional: empty = no change
 } pocket_override_t;
 
 static char filename_tmp[] = "/linuxcnc/tooltable.tmp";
@@ -405,10 +406,12 @@ static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_override
             continue;
         }
 
-        // Check if this tool has a pocket_id override
+        // Check if this tool has a pocket_id or name override
         for(uint8_t oi = 0; oi < n_overrides; oi++) {
             if(entry.tool.tool_id == overrides[oi].tool_id) {
                 entry.pocket_id = overrides[oi].new_pocket_id;
+                if(overrides[oi].name[0] != '\0')
+                    strncpy(entry.name, overrides[oi].name, sizeof(entry.name) - 1);
                 break;
             }
         }
@@ -614,7 +617,7 @@ static bool clearTools (void)
 // Public carousel API
 // ---------------------------------------------------------------------------
 
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets)
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets, const char *name)
 {
     if(!fs_available)
         return CarouselOp_TableNotLoaded;
@@ -632,21 +635,32 @@ carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_poc
         return CarouselOp_NoPocketAvailable;
 
     if(ie) {
-        // Tool exists as P0 in file - update pocket via rewrite
-        pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = free_pocket };
+        // Tool exists as P0 in file — update pocket and optionally name via rewrite
+        pocket_override_t ov = {0};
+        ov.tool_id       = tool_id;
+        ov.new_pocket_id = free_pocket;
+        if(name && *name) {
+            strncpy(ov.name, name, sizeof(ov.name) - 1);
+            ov.name[sizeof(ov.name) - 1] = '\0';
+        }
         if(!rewrite_file(&ov, 1))
             return CarouselOp_WriteError;
     } else {
-        // Brand-new tool - append minimal entry
+        // Brand-new tool — append entry with optional name
         tool_pocket_t newentry = {0};
         newentry.tool.tool_id = tool_id;
         newentry.pocket_id    = free_pocket;
+        if(name && *name) {
+            strncpy(newentry.name, name, sizeof(newentry.name) - 1);
+            newentry.name[sizeof(newentry.name) - 1] = '\0';
+        }
         if(!append_tool(&newentry))
             return CarouselOp_WriteError;
     }
 
     return CarouselOp_OK;
 }
+
 
 carousel_op_result_t tooltable_carousel_remove (tool_id_t tool_id)
 {
@@ -673,6 +687,16 @@ static void onToolChanged (tool_data_t *tool)
 
         pocket_override_t overrides[MAX_OVERRIDES];
         uint8_t n_overrides = 0;
+
+        // If the incoming tool is not in the file at all, create it with zeroed
+        // offsets now so setTool() (called after probing) has a valid entry to update.
+        tool_table_entry_t *existing = getTool(tool->tool_id);
+        if(!existing->data && fs_available) {
+            tool_pocket_t blank = {0};
+            blank.tool.tool_id = tool->tool_id;
+            blank.pocket_id    = -1;   // P0 — no pocket yet
+            append_tool(&blank);
+        }
 
         // Incoming tool: clear its carousel pocket (now in spindle)
         tool_index_entry_t *picked_up = index_find(tool->tool_id);
