@@ -662,8 +662,21 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
     if(incoming_pocket >= 1) {
         // ── PATH A: requested tool is in the carousel ──────────────────────
-        // Pass T and P as named parameters so the NGC can read them via
-        // #<_t> and #<_p> without needing to parse the filename.
+
+        // If the outgoing tool was hand-loaded (not from the carousel), pause
+        // first so the operator can remove it before carousel motion begins.
+        if(outgoing_pocket < 1) {
+            FLEXIHAL_DEBUG_PRINT("M6: outgoing tool is hand-loaded, pausing for removal before carousel pick");
+            status = tc_operator_unload_pause(parser_state);
+            if(status != Status_OK) {
+                tooltable_set_m6_prev(-1);
+                return status;
+            }
+            // Re-stop spindle/coolant in case tc_operator_unload_pause restored them.
+            spindle_all_off(false);
+            hal.coolant.set_state((coolant_state_t){0});
+        }
+
         FLEXIHAL_DEBUG_PRINT("M6: tool in carousel, running atc_change.ngc");
         // Pass parameters via numbered params in user range (31-5000):
         //   #4900 = incoming tool number

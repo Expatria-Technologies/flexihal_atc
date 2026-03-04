@@ -258,6 +258,94 @@ status_code_t tc_probe_tool (parser_state_t *parser_state)
 }
 
 // ---------------------------------------------------------------------------
+// tc_operator_unload_pause()
+//
+// Moves to home Z, optionally moves to G30, runs the pause hook, then
+// waits in STATE_TOOL_CHANGE for the operator to remove the current tool
+// and press cycle start.  Does NOT probe — used when the outgoing tool is
+// hand-loaded and the incoming tool will be picked from the carousel.
+//
+// After cycle start the machine rapids back to home Z before returning so
+// the carousel pick sequence starts from a known safe position.
+// ---------------------------------------------------------------------------
+status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
+{
+#if COMPATIBILITY_LEVEL > 1
+    return Status_GcodeUnsupportedCommand;
+#else
+    if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT))
+        return Status_HomingRequired;
+
+    plane_t plane;
+    get_probe_plane(&plane, &parser_state->modal);
+
+    plan_line_data_t plan_data;
+    coord_data_t target = {};
+
+    plan_data_init(&plan_data);
+    plan_data.condition.rapid_motion = On;
+
+    // ── 1. Z to home ────────────────────────────────────────────────────────
+    if(!go_home_z(&target, &plane, &plan_data))
+        return Status_Reset;
+
+    // ── 2. Optional move to G30 for operator access ──────────────────────────
+    if(settings.flags.tool_change_at_g30 &&
+       (sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) == (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
+
+        coord_system_data_t g30_offset;
+        settings_read_coord_data(CoordinateSystem_G30, &g30_offset);
+
+        target.values[plane.axis_0]      = g30_offset.coord.values[plane.axis_0];
+        target.values[plane.axis_1]      = g30_offset.coord.values[plane.axis_1];
+        target.values[plane.axis_linear] = sys.home_position[plane.axis_linear];
+
+        if(!mc_line(target.values, &plan_data))
+            return Status_Reset;
+
+        if(g30_offset.coord.values[plane.axis_linear] != sys.home_position[plane.axis_linear]) {
+            target.values[plane.axis_linear] = g30_offset.coord.values[plane.axis_linear];
+            if(!mc_line(target.values, &plan_data))
+                return Status_Reset;
+        }
+    }
+
+    if(!protocol_buffer_synchronize())
+        return Status_Reset;
+
+    sync_position();
+
+    // ── 3. Optional pause hook ───────────────────────────────────────────────
+    if(pause_hook != NULL) {
+        status_code_t hook_status = pause_hook();
+        if(hook_status != Status_OK)
+            return hook_status;
+    }
+
+    // ── 4. Enter tool change state — pause for operator to remove tool ────────
+    parser_state->tool_change = true;
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    protocol_execute_realtime();
+
+    if(ABORTED)
+        return Status_Reset;
+
+    // ── 5. Z back to home — ready for carousel pick ──────────────────────────
+    plan_data_init(&plan_data);
+    plan_data.condition.rapid_motion = On;
+
+    if(!go_home_z(&target, &plane, &plan_data))
+        return Status_Reset;
+
+    if(!protocol_buffer_synchronize())
+        return Status_Reset;
+
+    sync_position();
+
+    return Status_OK;
+#endif
+}
+
 // tc_manual_tool_change()
 //
 // Full manual tool change + measurement for tools not in the carousel.
