@@ -848,7 +848,7 @@ sys_commands_t *atc_get_commands()
 // STATE_IDLE.
 static void atc_poll (void *data)
 {
-    #define DEBOUNCE_TICKS 3  // consecutive readings required before acting
+    #define POLL_INTERVAL_MS 100
 
     static uint8_t debounce_count = 0;
     static uint8_t last_stable    = 0;  // last debounced button state
@@ -856,9 +856,14 @@ static void atc_poll (void *data)
 
     if(!atc.flags.user_input_active) {
         task_delete(atc_poll, NULL);
-        task_add_delayed(atc_poll, NULL, 100);
+        task_add_delayed(atc_poll, NULL, POLL_INTERVAL_MS);
         return;
     }
+
+    // Derive required stable-tick count from the drawbar delay setting.
+    // Minimum 1 so there is always at least one confirmation reading.
+    uint8_t debounce_ticks = (uint8_t)(atc.drawbar_delay / POLL_INTERVAL_MS);
+    if(debounce_ticks < 1) debounce_ticks = 1;
 
     read_atc_ports();
     uint8_t raw = atc_status.userinput_status;
@@ -867,11 +872,11 @@ static void atc_poll (void *data)
         // Input changed — restart debounce counter
         debounce_count = 0;
         last_raw = raw;
-    } else if(debounce_count < DEBOUNCE_TICKS) {
+    } else if(debounce_count < debounce_ticks) {
         debounce_count++;
     }
 
-    if(debounce_count >= DEBOUNCE_TICKS && raw != last_stable) {
+    if(debounce_count >= debounce_ticks && raw != last_stable) {
         // Stable transition detected
         last_stable = raw;
 
@@ -888,7 +893,7 @@ static void atc_poll (void *data)
     }
 
     task_delete(atc_poll, NULL);
-    task_add_delayed(atc_poll, NULL, 100);
+    task_add_delayed(atc_poll, NULL, POLL_INTERVAL_MS);
 }
 
 static void read_atc_ports(void)
