@@ -13,8 +13,4 @@
 #4914 = -45.0    ; Z engage height - tool fully seated in pocket (machine coords)
 #4915 = 200.0    ; engage feed rate (mm/min)
 
-; ── Manual tool change position ───────────────────────────────────────────────
-#4916 = 0.0      ; X position for manual swap
-#4917 = 0.0      ; Y position for manual swap
-
 M2

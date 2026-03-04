@@ -10,9 +10,6 @@
 ;
 ; See atc_change.ngc for geometry parameter definitions (#4910-#4917).
 
-M5    ; ensure spindle is off
-M9    ; ensure coolant is off
-
 ; ── Calculate return pocket XY ───────────────────────────────────────────────
 #100 = [#4910 + [#4902 - 1] * #4912]   ; pocket X
 #101 = #4911                             ; pocket Y

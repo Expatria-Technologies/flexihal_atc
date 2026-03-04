@@ -39,7 +39,7 @@
 #include "tooltable.h"
 #endif
 
-#include "atc_tool_change.h"
+#include "atc_tool_change.h"   // tc_probe_tool, tc_manual_tool_change
 
 //#include "flexihal_atc.h"
 
@@ -542,6 +542,11 @@ static status_code_t tool_change (parser_state_t *parser_state)
     atc_parser_state = parser_state; // save for use by $TCMEASURE
     tool_data_t *current = parser_state->tool;
 
+    // Stop spindle and coolant before any tool change path.
+    // State is read from gc_state.modal for restore at the end.
+    spindle_all_off(false);
+    hal.coolant.set_state((coolant_state_t){0});
+
 #if TOOLTABLE_ENABLE == 2
     // tool_pending is the tool ID requested by the Tn word before M6
     tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(parser_state->tool_pending);
@@ -550,8 +555,13 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
     tool_data_t *incoming = incoming_entry->data;
 
-    if(incoming->tool_id == current->tool_id)
-        return Status_OK; // already have the right tool
+    if(incoming->tool_id == current->tool_id) {
+        // Restore spindle/coolant even if no change needed
+        coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
+        spindle_t *spindle = gc_spindle_get(-1);
+        spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
+        return Status_OK;
+    }
 
     next_tool = incoming;
     memcpy(&current_tool, current, sizeof(tool_data_t));
@@ -585,17 +595,39 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
     } else {
         // ── PATH B: requested tool is NOT in the carousel ──────────────────
+        // If the outgoing tool is in the carousel, return it first via NGC,
+        // then fall through to tc_manual_tool_change for G30 + pause + probe.
+        // If the outgoing tool is also not in the carousel, go straight to
+        // tc_manual_tool_change.
         if(outgoing_pocket >= 1) {
-            // Return the outgoing tool to its pocket first, then atc_pause.ngc
-            // takes over for the manual swap.
-            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_return.ngc");
-            // #4902 = outgoing carousel pocket
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_return.ngc then manual change");
             ngc_param_set(4902, (float)outgoing_pocket);
             status = atc_macro_start("/linuxcnc/atc_return.ngc");
+            if(status != Status_OK) {
+                tooltable_set_m6_prev(M6Origin_Unknown, -1);
+                return status;
+            }
+            // Wait for atc_return.ngc to complete before proceeding
+            parser_state->tool_change = true;
+            system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+            protocol_execute_realtime();
+            if(ABORTED) {
+                tooltable_set_m6_prev(M6Origin_Unknown, -1);
+                return Status_Reset;
+            }
         } else {
-            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, running atc_pause.ngc");
-            status = atc_macro_start("/linuxcnc/atc_pause.ngc");
+            FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, proceeding to manual change");
         }
+
+        // G30 transit + STATE_TOOL_CHANGE pause + probe
+        status = tc_manual_tool_change(parser_state);
+        if(status != Status_OK) {
+            tooltable_set_m6_prev(M6Origin_Unknown, -1);
+            return status;
+        }
+
+        // PATH B completes here — skip the PATH A EXEC_TOOL_CHANGE block below
+        goto path_b_done;
     }
 
     if(status != Status_OK) {
@@ -607,6 +639,8 @@ static status_code_t tool_change (parser_state_t *parser_state)
     system_set_exec_state_flag(EXEC_TOOL_CHANGE);
     protocol_execute_realtime();
 
+    path_b_done:;
+
 #else
     // No tooltable — always fall back to a simple pause for manual swap
     next_tool = NULL;
@@ -615,6 +649,11 @@ static status_code_t tool_change (parser_state_t *parser_state)
     system_set_exec_state_flag(EXEC_TOOL_CHANGE);
     protocol_execute_realtime();
 #endif
+
+    // Restore spindle and coolant to pre-M6 state regardless of path taken.
+    coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
+    spindle_t *spindle = gc_spindle_get(-1);
+    spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
 
     if(on_tool_change)
         return on_tool_change(parser_state);
@@ -639,12 +678,6 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
     return result;
 }
 
-static status_code_t carousel_wait (sys_state_t state, char *args)
-{
-    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
-    return Status_OK;
-}
-
 // ---------------------------------------------------------------------------
 // Command table
 // ---------------------------------------------------------------------------
@@ -655,7 +688,6 @@ const sys_command_t atc_command_list[] = {
     {"TCADD",     carousel_add,     { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn" }},
     {"TCRM",      carousel_remove,  { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
     {"TCMEASURE", carousel_measure, { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
-    {"TCWAIT",    carousel_wait,    { .noargs = On  }, { .str = "Pause for manual tool swap (enters tool change mode)" }},
 };
 
 static sys_commands_t atc_commands = {

@@ -19,9 +19,6 @@
 ;   #4916 = X position of manual tool change location
 ;   #4917 = Y position of manual tool change location
 
-M5    ; ensure spindle is off
-M9    ; ensure coolant is off
-
 ; ── Calculate incoming pocket XY ─────────────────────────────────────────────
 #100 = [#4910 + [#4901 - 1] * #4912]   ; pocket X
 #101 = #4911                             ; pocket Y
