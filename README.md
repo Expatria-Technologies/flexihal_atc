@@ -70,8 +70,6 @@ The following file is **optional**:
 
 If any **required** macro file is missing, M6 will report a warning and abort rather than leaving the machine in an undefined state.
 
-> **Note:** Do not add `$TCMEASURE` to `atc_pause.ngc`. Measurement is handled automatically by the plugin after the operator presses cycle start.
-
 ### Parameters Set by Plugin
 
 The plugin sets the following numbered NGC parameters before starting a macro:
