@@ -326,7 +326,7 @@ static bool rebuild_index (void)
     tool_pocket_t entry;
 
     while(read_line(file, line, sizeof(line))) {
-        if(parse_line(line, &entry))
+        if(parse_line(line, &entry) && entry.pocket_id >= 1)
             index_upsert_full(&entry);
     }
 
@@ -456,23 +456,61 @@ static bool append_tool (const tool_pocket_t *p)
 // persistent storage — no static result buffer needed, no file open required.
 // The index is always kept up to date with full tool data by rebuild_index()
 // and index_upsert_full(), so this is safe across successive calls.
+// File-scan result buffer — only used for P0 tools not in the index.
+// Safe to be a single static because P0 tools are never enumerated in a loop
+// by report.c (getToolByIdx only returns carousel tools by pocket number).
+typedef struct {
+    tool_table_entry_t entry;
+    tool_data_t        tool;
+    char               name[sizeof(((tool_pocket_t*)0)->name)];
+} tool_scan_result_t;
+
 static tool_table_entry_t *getTool (tool_id_t tool_id)
 {
-    static tool_table_entry_t empty = { .data = NULL };
+    static tool_table_entry_t  empty  = { .data = NULL };
+    static tool_scan_result_t  scanned = {0};
 
     tool_index_entry_t *ie = index_find(tool_id);
-    if(!ie)
+
+    if(ie) {
+        // Carousel tool — return stable pointer into index entry
+        static tool_table_entry_t result;
+        result.data   = &ie->tool;
+        result.pocket = ie->pocket_id;
+        result.name   = ie->name;
+        return &result;
+    }
+
+    // Not in index — P0 tool or unknown. Scan file.
+    if(!fs_available)
         return &empty;
 
-    if(!settings.macro_atc_flags.random_toolchanger && ie->pocket_id < 1)
+    vfs_file_t *file = vfs_open(filename, "r");
+    if(!file)
         return &empty;
 
-    // Return pointers directly into the index entry — stable across calls
-    static tool_table_entry_t result;
-    result.data   = &ie->tool;
-    result.pocket = ie->pocket_id;
-    result.name   = ie->name;
-    return &result;
+    char line[300];
+    tool_pocket_t entry;
+    bool found = false;
+
+    while(read_line(file, line, sizeof(line))) {
+        if(parse_line(line, &entry) && entry.tool.tool_id == tool_id) {
+            found = true;
+            break;
+        }
+    }
+    vfs_close(file);
+
+    if(!found)
+        return &empty;
+
+    memcpy(&scanned.tool, &entry.tool, sizeof(tool_data_t));
+    strncpy(scanned.name, entry.name, sizeof(scanned.name) - 1);
+    scanned.name[sizeof(scanned.name) - 1] = ' ';
+    scanned.entry.data   = &scanned.tool;
+    scanned.entry.pocket = entry.pocket_id;  // will be -1
+    scanned.entry.name   = scanned.name;
+    return &scanned.entry;
 }
 
 // ---------------------------------------------------------------------------
@@ -841,7 +879,7 @@ void tooltable_init (void)
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
-    grbl.tool_table.n_tools         = 9999;
+    grbl.tool_table.n_tools         = 0;
     grbl.tool_table.get_tool        = getTool;
     grbl.tool_table.reload           = reload_tools;
     grbl.tool_table.set_tool        = setTool;
