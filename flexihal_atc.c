@@ -31,15 +31,13 @@
 #include "grbl/nvs_buffer.h"
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
+#if TOOLTABLE_ENABLE == 2
 #include "grbl/ngc_flowctrl.h"
 #include "grbl/stream_file.h"
 #include "grbl/ngc_params.h"
-
-#if TOOLTABLE_ENABLE == 2
 #include "tooltable.h"
-#endif
-
 #include "atc_tool_change.h"   // tc_probe_tool, tc_manual_tool_change
+#endif
 
 //#include "flexihal_atc.h"
 
@@ -110,7 +108,9 @@ typedef struct {
     uint16_t drawbar_delay;
     atc_ports_t  ports;
     atc_settings_flags_t flags;
+#if TOOLTABLE_ENABLE == 2
     int16_t number_of_pockets;
+#endif
 } atc_settings_t;
 
 static nvs_address_t nvs_address;
@@ -118,16 +118,16 @@ static atc_settings_t atc;
 static atc_status_flags_t atc_status;
 
 static tool_data_t current_tool = {0}, *next_tool = NULL;
-//static coord_data_t target = {0}, previous;
 
 static on_spindle_select_ptr on_spindle_select;
 static on_probe_toolsetter_ptr on_probe_fixture;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
+#if TOOLTABLE_ENABLE == 2
 static tool_change_ptr on_tool_change = NULL;
 static parser_state_t *atc_parser_state = NULL; // saved from tool_change(), used by $TCMEASURE
-//static on_execute_realtime_ptr on_execute_realtime, on_execute_delay;
+#endif
 
 static uint8_t n_in_ports;
 static uint8_t n_out_ports;
@@ -277,8 +277,10 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 }
 
 // ---------------------------------------------------------------------------
-// Carousel management commands
+// Carousel management commands (TOOLTABLE_ENABLE == 2 only)
 // ---------------------------------------------------------------------------
+
+#if TOOLTABLE_ENABLE == 2
 
 // $TCADD Tn [;name]  — Add the tool currently in the spindle to a free carousel pocket.
 //
@@ -795,6 +797,8 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
     return result;
 }
 
+#endif // TOOLTABLE_ENABLE == 2
+
 // ---------------------------------------------------------------------------
 // Command table
 // ---------------------------------------------------------------------------
@@ -802,10 +806,12 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
 const sys_command_t atc_command_list[] = {
     {"DRBO",      drawbar_open,       { .noargs = On  }, { .str = "Open the drawbar" }},
     {"DRBC",      drawbar_close,      { .noargs = On  }, { .str = "Close the drawbar" }},
+#if TOOLTABLE_ENABLE == 2
     {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn [;name]" }},
     {"TCREG",     carousel_register,  { .noargs = Off }, { .str = "Register tool in tooltable at P0: $TCREG Tn [;name]" }},
     {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
     {"TCMEASURE", carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
+#endif
 };
 
 static sys_commands_t atc_commands = {
@@ -965,8 +971,10 @@ static const setting_detail_t atc_settings[] = {
     { 958, Group_Toolchange, "ATC Air Seal Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.air_seal, NULL, NULL, { .reboot_required = On } },
     { 959, Group_Toolchange, "ATC Taper Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.taper_clear, NULL, NULL, { .reboot_required = On } },
     { 960, Group_Toolchange, "ATC TLO Clear Port", NULL, Format_Int8, "#0", "0", max_out_port, Setting_NonCore, &atc.ports.tlo_clear, NULL, NULL, { .reboot_required = On } },
-    { 962, Group_Toolchange, "ATC Number of Pockets", "pockets", Format_Int16, "##0", "1", "9999", Setting_NonCore, &atc.number_of_pockets, NULL, NULL },
     { 961, Group_Toolchange, "ATC Flags", NULL, Format_Bitfield, "User Input Enabled, Tool Detect Enabled, Drawbar Status Enabled, Drawbar Control Enabled, Air Seal Control Enabled, Taper Clear Enabled, Toolsetter Clear Enabled", NULL, NULL, Setting_NonCore, &atc.flags, NULL, NULL },
+#if TOOLTABLE_ENABLE == 2
+    { 962, Group_Toolchange, "ATC Number of Pockets", "pockets", Format_Int16, "##0", "1", "9999", Setting_NonCore, &atc.number_of_pockets, NULL, NULL },
+#endif
 };
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
@@ -980,7 +988,9 @@ static const setting_descr_t atc_descriptions[] = {
     { 958, "Aux output port for air seal control" },
     { 959, "Aux output port for taper clear control" },
     { 960, "Aux output port for toolsetter clearing" },
+#if TOOLTABLE_ENABLE == 2    
     { 962, "Number of physical pockets in the carousel (max 9999). $TCADD will refuse to assign a pocket number beyond this limit." },
+#endif    
     { 961, "Aux input for ATC button is enabled.\\n"
             "Aux input for tool clamp sensor is enabled.\\n"
             "Aux input for drawbar status is enabled.\\n\\n"
@@ -1002,7 +1012,9 @@ static void atc_settings_restore (void)
 {
     memset(&atc, 0, sizeof(atc_settings_t));
 
+#if TOOLTABLE_ENABLE == 2
     atc.number_of_pockets = 12; // default carousel size
+#endif
     atc.ports.userinput = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.tool_present = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
     atc.ports.drawbar_status = hal.port.num_digital_in ? hal.port.num_digital_in - 1 : 0;
@@ -1073,6 +1085,7 @@ static void atc_settings_load (void)
 
 
     //this is where we redirect the tool change
+#if TOOLTABLE_ENABLE == 2
     if (settings.tool_change.mode != ToolChange_Automatic)
         return;  
 
@@ -1082,6 +1095,7 @@ static void atc_settings_load (void)
     
     on_tool_change = hal.tool.change;
     hal.tool.change = tool_change;
+#endif
 }
 
 static setting_details_t setting_details = {
@@ -1101,6 +1115,7 @@ static setting_details_t setting_details = {
 static void reset (void)
 {
     FLEXIHAL_DEBUG_PRINT("Reset.");
+#if TOOLTABLE_ENABLE == 2
     if(next_tool) {
         if(current_tool.tool_id != next_tool->tool_id) {
             if(grbl.tool_table.n_tools)
@@ -1118,7 +1133,7 @@ static void reset (void)
         gc_state.tool_pending = gc_state.tool->tool_id;
         next_tool = NULL;
     }
-
+#endif
     driver_reset();
 }
 
@@ -1135,6 +1150,7 @@ static void atc_reset (void)
     driver_reset();
 }
 
+#if TOOLTABLE_ENABLE == 2
 static atc_status_t atc_get_state (void)
 {
     // If macros.c has claimed hal.tool.change via tc.macro, report Online
@@ -1142,6 +1158,7 @@ static atc_status_t atc_get_state (void)
     // our own tool_change() is in place — also report Online to block tc_init().
     return ATC_Online;
 }
+#endif
 
 void atc_init (void)
 {
@@ -1176,8 +1193,10 @@ void atc_init (void)
     // We do NOT set hal.driver_cap.atc here — leaving it Off allows
     // macros.c to claim hal.tool.change if a tc.macro file is found on the
     // filesystem, which is the intended override behaviour.
+#if TOOLTABLE_ENABLE == 2
     hal.tool.atc_get_state = atc_get_state;
     tc_set_pause_hook(run_pause_hook);
+#endif
 
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;    
