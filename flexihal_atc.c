@@ -524,7 +524,7 @@ static status_code_t atc_macro_start (const char *filename)
         return vfs_stat(filename, &st) == 0 ? Status_OK : Status_FileOpenFailed;
     }
 
-    if((file = stream_redirect_read(filename, atc_macro_on_error, atc_macro_on_eof)) == NULL) {
+    if((file = stream_redirect_read((char *)filename, atc_macro_on_error, atc_macro_on_eof)) == NULL) {
         report_message(filename, Message_Warning);
         report_message("ATC: macro file not found", Message_Warning);
         return Status_FileOpenFailed;
