@@ -108,24 +108,6 @@ static tool_index_entry_t *index_find (tool_id_t tool_id)
     return NULL;
 }
 
-static bool index_upsert (tool_id_t tool_id, pocket_id_t pocket_id)
-{
-    tool_index_entry_t *e = index_find(tool_id);
-    if(e) {
-        e->pocket_id = pocket_id;
-        return true;
-    }
-    if(n_tools >= index_cap && !index_grow())
-        return false;
-    tt_index[n_tools].tool_id   = tool_id;
-    tt_index[n_tools].pocket_id = pocket_id;
-    memset(&tt_index[n_tools].tool, 0, sizeof(tool_data_t));
-    tt_index[n_tools].tool.tool_id = tool_id;
-    tt_index[n_tools].name[0] = '\0';
-    n_tools++;
-    return true;
-}
-
 static bool index_upsert_full (const tool_pocket_t *p)
 {
     tool_index_entry_t *e = index_find(p->tool.tool_id);
@@ -509,7 +491,7 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
 
     memcpy(&scanned.tool, &entry.tool, sizeof(tool_data_t));
     strncpy(scanned.name, entry.name, sizeof(scanned.name) - 1);
-    scanned.name[sizeof(scanned.name) - 1] = ' ';
+    scanned.name[sizeof(scanned.name) - 1] = '\0';
     scanned.entry.data   = &scanned.tool;
     scanned.entry.pocket = entry.pocket_id;  // will be -1
     scanned.entry.name   = scanned.name;
@@ -611,6 +593,16 @@ static bool clearTools (void)
 
     rebuild_index();
     return true;
+}
+
+// Return the name/comment for a tool from the RAM index.
+// Returns NULL if the tool is not indexed or has no name.
+const char *tooltable_get_name (tool_id_t tool_id)
+{
+    tool_index_entry_t *e = index_find(tool_id);
+    if(e == NULL || e->name[0] == '\0')
+        return NULL;
+    return e->name;
 }
 
 // ---------------------------------------------------------------------------

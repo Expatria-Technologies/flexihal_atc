@@ -2,6 +2,12 @@
 
 #include "grbl/gcode.h"
 
+// Optional hook called after machine arrives at change position (G30 or home Z)
+// but before STATE_TOOL_CHANGE pause.  Register via tc_set_pause_hook().
+// If the hook returns non-OK the tool change is aborted.
+typedef status_code_t (*tc_pause_hook_ptr)(void);
+void tc_set_pause_hook (tc_pause_hook_ptr hook);
+
 // Probe the tool currently in the spindle against the G59.3 toolsetter and
 // set the tool length offset.  Called by the $TCMEASURE system command after
 // a carousel tool change has physically completed.

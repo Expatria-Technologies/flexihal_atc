@@ -47,6 +47,14 @@
 
 #include "atc_tool_change.h"
 
+static tc_pause_hook_ptr pause_hook = NULL;
+
+void tc_set_pause_hook (tc_pause_hook_ptr hook)
+{
+    pause_hook = hook;
+}
+
+
 #ifndef TOOL_CHANGE_PROBE_RETRACT_DISTANCE
 #define TOOL_CHANGE_PROBE_RETRACT_DISTANCE 2.0f
 #endif
@@ -320,7 +328,17 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
 
     sync_position();
 
-    // ── 3. Enter tool change state — pause for operator ──────────────────────
+    // ── 3. Optional pause hook ───────────────────────────────────────────────
+    // Registered by the ATC plugin (e.g. to run atc_pause.ngc).
+    // Called after the machine has arrived at the change position so any
+    // operator signal (light, buzzer, message) fires at the right location.
+    if(pause_hook != NULL) {
+        status_code_t hook_status = pause_hook();
+        if(hook_status != Status_OK)
+            return hook_status;
+    }
+
+    // ── 4. Enter tool change state — pause for operator ──────────────────────
     // Sets STATE_TOOL_CHANGE; execution resumes when the operator presses
     // cycle start (same mechanism as $TCWAIT in the NGC macros).
     parser_state->tool_change = true;
@@ -330,14 +348,14 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
     if(ABORTED)
         return Status_Reset;
 
-    // ── 4. Z back to home after operator interaction ─────────────────────────
+    // ── 5. Z back to home after operator interaction ─────────────────────────
     plan_data_init(&plan_data);
     plan_data.condition.rapid_motion = On;
 
     if(!go_home_z(&target, &plane, &plan_data))
         return Status_Reset;
 
-    // ── 5. Measure ───────────────────────────────────────────────────────────
+    // ── 6. Measure ───────────────────────────────────────────────────────────
     return do_probe_sequence(&plane, gc_state.tool);
 #endif
 }

@@ -619,7 +619,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
             FLEXIHAL_DEBUG_PRINT("M6: tool not in carousel, proceeding to manual change");
         }
 
-        // G30 transit + STATE_TOOL_CHANGE pause + probe
+        // G30 transit + optional atc_pause.ngc hook + STATE_TOOL_CHANGE pause + probe
         status = tc_manual_tool_change(parser_state);
         if(status != Status_OK) {
             tooltable_set_m6_prev(M6Origin_Unknown, -1);
@@ -659,6 +659,44 @@ static status_code_t tool_change (parser_state_t *parser_state)
         return on_tool_change(parser_state);
 
     return Status_OK;
+}
+
+// Pause hook registered with tc_set_pause_hook().
+// Runs atc_pause.ngc if it exists on the SD card; silently skips if absent.
+// Reports the tool name/comment to the stream before launching the macro so
+// the operator sees it regardless of whether atc_pause.ngc is present.
+static status_code_t run_pause_hook (void)
+{
+#if TOOLTABLE_ENABLE == 2
+    // Report the tool name to the operator now, at the change position,
+    // before any NGC macro runs.  next_tool is set in tool_change().
+    if(next_tool) {
+        const char *name = tooltable_get_name(next_tool->tool_id);
+        char msg[128];
+        if(name)
+            snprintf(msg, sizeof(msg), "Load T%lu (%s) and press cycle start",
+                     (unsigned long)next_tool->tool_id, name);
+        else
+            snprintf(msg, sizeof(msg), "Load T%lu and press cycle start",
+                     (unsigned long)next_tool->tool_id);
+        report_message(msg, Message_Info);
+    }
+#endif
+
+    vfs_stat_t st;
+    if(vfs_stat("/linuxcnc/atc_pause.ngc", &st) != 0)
+        return Status_OK;   // file absent — skip silently
+
+    FLEXIHAL_DEBUG_PRINT("M6: running optional atc_pause.ngc hook");
+
+    status_code_t status = atc_macro_start("/linuxcnc/atc_pause.ngc");
+    if(status != Status_OK)
+        return status;
+
+    system_set_exec_state_flag(EXEC_TOOL_CHANGE);
+    protocol_execute_realtime();
+
+    return ABORTED ? Status_Reset : Status_OK;
 }
 
 static status_code_t carousel_measure (sys_state_t state, char *args)
@@ -963,7 +1001,7 @@ static void atc_settings_load (void)
     grbl.tool_table.n_tools = atc.number_of_pockets;
     
     on_tool_change = hal.tool.change;
-    hal.tool.change = tool_change;    
+    hal.tool.change = tool_change;
 }
 
 static setting_details_t setting_details = {
@@ -1059,6 +1097,7 @@ void atc_init (void)
     // macros.c to claim hal.tool.change if a tc.macro file is found on the
     // filesystem, which is the intended override behaviour.
     hal.tool.atc_get_state = atc_get_state;
+    tc_set_pause_hook(run_pause_hook);
 
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;    

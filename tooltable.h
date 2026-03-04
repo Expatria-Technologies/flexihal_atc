@@ -47,6 +47,10 @@ typedef enum {
 // Pass pocket = -1 when origin is M6Origin_Manual.
 void tooltable_set_m6_prev (m6_tool_origin_t origin, pocket_id_t pocket);
 
+// Return the name/comment string for a tool from the RAM index.
+// Returns NULL if the tool is not indexed or has no name.
+const char *tooltable_get_name (tool_id_t tool_id);
+
 // Add a tool to the carousel.
 // Finds the lowest-numbered free pocket, assigns the tool to it, and
 // persists the change to the tooltable file.

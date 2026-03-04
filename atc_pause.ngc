@@ -1,0 +1,13 @@
+; atc_pause.ngc - Operator notification hook for manual tool change
+;
+; Called after the machine has moved to the change position (G30 or home Z)
+; but before the operator pause.  The ATC plugin has already reported the
+; tool name/comment to the stream if one exists in the tool table.
+;
+; #4900 = incoming tool number
+; #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
+;
+; Add any operator signalling here (lights, buzzers, etc.)
+;
+
+M2
