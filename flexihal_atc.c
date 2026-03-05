@@ -379,12 +379,15 @@ static status_code_t carousel_add (sys_state_t state, char *args)
 #endif
 }
 
-// $TCREG [Tn] [;name] — Register a tool in the tooltable at P0 (not in the carousel).
+// $TCREG Tn [;name] — Register a tool in the tooltable at P0 (not in the carousel).
 //
 // Usage:
 //   $TCREG T3            register tool 3 at P0 (no pocket assignment)
 //   $TCREG T3 ;12mm EM   register tool 3 with a description
-//   $TCREG               use current spindle tool
+//
+// A tool number is always required — unlike $TCADD, $TCREG is for registering
+// tools that are not currently in the spindle, so gc_state.tool cannot be used
+// as a reliable default.
 //
 // If the tool is already in the carousel, reports an error — use $TCADD for that.
 // If the tool is already registered at P0, updates the name if one is given.
@@ -400,30 +403,23 @@ static status_code_t carousel_register (sys_state_t state, char *args)
         return Status_InvalidStatement;
     }
 
+    if(!args || !*args || (*args != 'T' && *args != 't')) {
+        report_message("TCREG: usage is $TCREG Tn [;name]", Message_Warning);
+        return Status_BadNumberFormat;
+    }
+
     uint32_t tool_id;
     const char *name = NULL;
 
-    if(!args || !*args) {
-        tool_id = (uint32_t)gc_state.tool->tool_id;
-        if(tool_id == 0) {
-            report_message("TCREG: no tool selected and no argument given", Message_Warning);
-            return Status_BadNumberFormat;
-        }
-    } else {
-        if(*args != 'T' && *args != 't') {
-            report_message("TCREG: usage is $TCREG Tn [;name]  (or $TCREG to use current tool)", Message_Warning);
-            return Status_BadNumberFormat;
-        }
-        uint_fast8_t cc = 1;
-        status_code_t parse_status = read_uint(args, &cc, &tool_id);
-        if(parse_status != Status_OK) {
-            report_message("TCREG: invalid tool number", Message_Warning);
-            return parse_status;
-        }
-        while(args[cc] == ' ' || args[cc] == '\t') cc++;
-        if(args[cc] == ';')
-            name = &args[cc + 1];
+    uint_fast8_t cc = 1;
+    status_code_t parse_status = read_uint(args, &cc, &tool_id);
+    if(parse_status != Status_OK) {
+        report_message("TCREG: invalid tool number", Message_Warning);
+        return parse_status;
     }
+    while(args[cc] == ' ' || args[cc] == '\t') cc++;
+    if(args[cc] == ';')
+        name = &args[cc + 1];
 
     carousel_op_result_t result = tooltable_register_tool((tool_id_t)tool_id, name);
 
