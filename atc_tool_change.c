@@ -47,6 +47,7 @@
 
 #if ATC_ENABLE == 2
 
+#include <stdio.h>
 #include <string.h>
 
 #include "grbl/hal.h"
