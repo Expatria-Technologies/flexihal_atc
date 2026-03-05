@@ -462,12 +462,20 @@ static status_code_t carousel_register (sys_state_t state, char *args)
 #endif
 }
 
-// $TCRM Tn  — Remove a tool from the carousel (mark its pocket as empty).
+// $TCRM [Tn]  — Clear a tool's carousel pocket assignment in the tooltable.
 //
 // Usage:
-//   $TCRM T3    remove tool 3 from its carousel pocket
+//   $TCRM T3    clear tool 3's pocket assignment (moves it to P0)
+//   $TCRM       use the tool currently in the spindle
 //
-// The machine must be IDLE.
+// This is a purely administrative operation — it updates the tooltable record
+// only.  The operator is responsible for physically removing the tool from the
+// carousel before issuing this command.
+//
+// When called without arguments, uses gc_state.tool->tool_id.  If a tool-present
+// sensor is configured, the tool must be detected in the spindle — confirming
+// that gc_state.tool matches the physical tool.  The tool is then marked P0
+// and remains usable as a hand-loaded tool.
 
 static status_code_t carousel_remove (sys_state_t state, char *args)
 {
@@ -475,24 +483,40 @@ static status_code_t carousel_remove (sys_state_t state, char *args)
     report_message("TCRM requires TOOLTABLE_ENABLE=2", Message_Warning);
     return Status_GcodeUnsupportedCommand;
 #else
-    // Must be idle
     if(state_get() != STATE_IDLE) {
         report_message("TCRM: machine must be IDLE", Message_Warning);
         return Status_InvalidStatement;
     }
 
-    // Parse tool number from args (expect "Tn")
-    if(!args || (*args != 'T' && *args != 't')) {
-        report_message("TCRM: usage is $TCRM Tn", Message_Warning);
-        return Status_BadNumberFormat;
-    }
-
-    uint_fast8_t cc = 1;
     uint32_t tool_id;
-    status_code_t parse_status = read_uint(args, &cc, &tool_id);
-    if(parse_status != Status_OK) {
-        report_message("TCRM: invalid tool number", Message_Warning);
-        return parse_status;
+
+    if(!args || !*args) {
+        // No argument — use current spindle tool
+        tool_id = (uint32_t)gc_state.tool->tool_id;
+        if(tool_id == 0) {
+            report_message("TCRM: no tool selected and no argument given", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        // If a tool-present sensor is configured, confirm the tool is actually
+        // in the spindle — corroborating that gc_state.tool is accurate.
+        if(atc.flags.tool_present_active) {
+            read_atc_ports();
+            if(!atc_status.toolpresent_status) {
+                report_message("TCRM: no tool detected in spindle — specify tool number explicitly", Message_Warning);
+                return Status_GcodeValueOutOfRange;
+            }
+        }
+    } else {
+        if(*args != 'T' && *args != 't') {
+            report_message("TCRM: usage is $TCRM [Tn]", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        uint8_t cc = 1;
+        status_code_t parse_status = read_uint(args, &cc, &tool_id);
+        if(parse_status != Status_OK) {
+            report_message("TCRM: invalid tool number", Message_Warning);
+            return parse_status;
+        }
     }
 
     carousel_op_result_t result = tooltable_carousel_remove((tool_id_t)tool_id);
@@ -826,7 +850,7 @@ const sys_command_t atc_command_list[] = {
 #if TOOLTABLE_ENABLE == 2
     {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn [;name]" }},
     {"TCREG",     carousel_register,  { .noargs = Off }, { .str = "Register tool in tooltable at P0: $TCREG Tn [;name]" }},
-    {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Remove tool from carousel: $TCRM Tn" }},
+    {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Clear tool's carousel pocket in tooltable (does not move the tool): $TCRM [Tn]" }},
     {"TCMEASURE", carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
 #endif
 };
