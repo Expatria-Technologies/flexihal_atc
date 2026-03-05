@@ -17,9 +17,6 @@
 
   Both share a common static probe sequence (do_probe_sequence).
 
-  Copyright (c) 2024 rvalotta
-  Copyright (c) 2024 rcp1
-
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -35,6 +32,8 @@
 */
 
 #if ATC_ENABLE == 2
+
+#define DISABLE_PROBE 1
 
 #include <string.h>
 
@@ -133,6 +132,7 @@ static status_code_t do_probe_sequence (plane_t *plane, tool_data_t *tool)
     coord_system_data_t g59_3_offset;
     coord_data_t target = {};
 
+#ifdef DISABLE_PROBE
     settings_read_coord_data(CoordinateSystem_G59_3, &g59_3_offset);
 
     bool use_toolsetter = grbl.on_probe_toolsetter != NULL;
@@ -228,6 +228,9 @@ cleanup:
     sync_position();
 
     return ok ? Status_OK : Status_GCodeToolError;
+#else
+    return ok;
+#endif
 }
 
 // ---------------------------------------------------------------------------

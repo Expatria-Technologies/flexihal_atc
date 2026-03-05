@@ -3,9 +3,6 @@
 
   Part of grblHAL
 
-  Copyright (c) 2024 rvalotta
-  Copyright (c) 2024 rcp1
-
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -511,7 +508,7 @@ static status_code_t carousel_remove (sys_state_t state, char *args)
             report_message("TCRM: usage is $TCRM [Tn]", Message_Warning);
             return Status_BadNumberFormat;
         }
-        uint8_t cc = 1;
+        uint_fast8_t cc = 1;
         status_code_t parse_status = read_uint(args, &cc, &tool_id);
         if(parse_status != Status_OK) {
             report_message("TCRM: invalid tool number", Message_Warning);
