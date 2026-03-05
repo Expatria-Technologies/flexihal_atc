@@ -1,5 +1,5 @@
 /*
-  atc_tool_change.c - Tool length measurement for ATC plugin
+  atc_tool_change.c — Tool length measurement for ATC plugin
 
   Part of grblHAL
 
@@ -7,15 +7,29 @@
   toolsetter, matching the ToolChange_SemiAutomatic behaviour from grblHAL's
   tool_change.c:
 
-    tc_probe_tool()          — measurement only, for carousel tools already
-                               loaded by the NGC macro.
+    tc_probe_tool()             — measurement only, for carousel tools already
+                                  loaded by the NGC macro.  Called by $TCMEASURE.
 
-    tc_manual_tool_change()  — full manual flow: move to home Z, optionally
-                               move to G30 for operator load/unload, enter
-                               STATE_TOOL_CHANGE (cycle-start pause), then
-                               measure.  Used for tools not in the carousel.
+    tc_manual_tool_change()     — full manual flow: move to home Z, optionally
+                                  move to G30 for operator load/unload, enter
+                                  STATE_TOOL_CHANGE (cycle-start pause), then
+                                  measure.  Used for tools not in the carousel.
 
-  Both share a common static probe sequence (do_probe_sequence).
+    tc_operator_unload_pause()  — pause-only flow for the case where the
+                                  outgoing tool is hand-loaded and the incoming
+                                  tool will be picked from the carousel.  No probe.
+
+  Measurement is delegated entirely to atc_measure.ngc.  The macro reads all
+  feed rates and distances from grblHAL settings via PRM[] inline expressions
+  ($342–$345), stores each tool's absolute gauge length in the tool table via
+  G10 L11, and activates it via G43.  No parameters are passed from C; the
+  macro is self-contained and stateless across calls.
+
+  atc_measure.ngc must be present at /linuxcnc/atc_measure.ngc.
+  NGC expression support must be enabled in config.h (or via the Web Builder).
+
+  Copyright (c) 2024 rvalotta
+  Copyright (c) 2024 rcp1
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,7 +38,7 @@
 
   grblHAL is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
   GNU General Public License for more details.
 
   You should have received a copy of the GNU General Public License
@@ -33,8 +47,6 @@
 
 #if ATC_ENABLE == 2
 
-#define DISABLE_PROBE 1
-
 #include <string.h>
 
 #include "grbl/hal.h"
@@ -42,7 +54,7 @@
 #include "grbl/protocol.h"
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
-#include "grbl/tool_change.h"   // for settings.tool_change, ToolChange_* enums
+#include "grbl/stream_file.h"
 
 #include "atc_tool_change.h"
 
@@ -53,25 +65,9 @@ void tc_set_pause_hook (tc_pause_hook_ptr hook)
     pause_hook = hook;
 }
 
-
-#ifndef TOOL_CHANGE_PROBE_RETRACT_DISTANCE
-#define TOOL_CHANGE_PROBE_RETRACT_DISTANCE 2.0f
-#endif
-
 // ---------------------------------------------------------------------------
-// Helpers (mirror the static helpers in tool_change.c)
+// Helpers
 // ---------------------------------------------------------------------------
-
-// Clamp probe target to machine envelope on the given axis.
-static void set_probe_target (coord_data_t *target, uint8_t axis)
-{
-    target->values[axis] -= settings.tool_change.probing_distance;
-
-    if(bit_istrue(sys.homed.mask, bit(axis)) && settings.axis[axis].max_travel < -0.0f)
-        target->values[axis] = max(min(target->values[axis],
-                                       sys.work_envelope.max.values[axis]),
-                                       sys.work_envelope.min.values[axis]);
-}
 
 // Resolve probe axis from compile-time TOOL_LENGTH_OFFSET_AXIS or from the
 // active plane in the caller's parser_state modal.
@@ -108,141 +104,81 @@ static bool go_home_z (coord_data_t *target, plane_t *plane, plan_line_data_t *p
 }
 
 // ---------------------------------------------------------------------------
-// do_probe_sequence() — shared core measurement sequence.
+// run_measure_macro()
 //
-// Preconditions: machine homed on XYZ, tool clamped, spindle/coolant off.
-// On entry the machine may be anywhere at or above home Z.
+// Stream atc_measure.ngc into the grblHAL motion pipeline using the same
+// stream_redirect_read() pattern as atc_macro_start() in flexihal_atc.c.
+// Execution is synchronous from the caller's perspective: the function does
+// not return until the macro has completed (M2/M99) or been aborted.
 //
-// Sequence:
-//   1. Rapid Z to home (safe clearance before XY move)
-//   2. Rapid XY to G59.3 position (notify toolsetter handler before move)
-//   3. Rapid Z to G59.3 approach height
-//   4. Fast probe down (probe_is_no_error so a miss doesn't hard-fault)
-//   5. Retract TOOL_CHANGE_PROBE_RETRACT_DISTANCE
-//      - fast pulloff:  slow retract until contact lost (probe_is_away)
-//      - standard:      fixed retract then slow re-probe
-//   6. Set TLO (or establish reference on first probe)
-//   7. Rapid Z to home
+// The macro is responsible for:
+//   - cancelling any active TLO (G49)
+//   - moving to G59.3 (toolsetter XY and approach Z)
+//   - fast seek + slow locate probe cycle
+//   - storing the gauge length via G10 L11 P<tool> Z0
+//   - activating the stored offset via G43
+//   - retracting to home Z
+//
+// Returns Status_OK on success, Status_FileOpenFailed if the file is missing,
+// or Status_Reset if the macro was aborted.
 // ---------------------------------------------------------------------------
-static status_code_t do_probe_sequence (plane_t *plane, tool_data_t *tool)
+#define ATC_MEASURE_MACRO "/linuxcnc/atc_measure.ngc"
+
+static status_code_t measure_macro_status;
+
+static status_code_t measure_on_error (status_code_t status)
 {
-    bool ok;
-    plan_line_data_t plan_data;
-    gc_parser_flags_t flags = {};
-    coord_system_data_t g59_3_offset;
-    coord_data_t target = {};
+    char msg[48];
+    snprintf(msg, sizeof(msg), "ATC measure error: %d", (uint8_t)status);
+    report_message(msg, Message_Warning);
+    measure_macro_status = status;
+    return status;
+}
 
-#ifdef DISABLE_PROBE
-    settings_read_coord_data(CoordinateSystem_G59_3, &g59_3_offset);
+static status_code_t measure_on_eof (vfs_file_t *file, status_code_t status)
+{
+    measure_macro_status = status;
+    return status;
+}
 
-    bool use_toolsetter = grbl.on_probe_toolsetter != NULL;
-
-    plan_data_init(&plan_data);
-    plan_data.condition.rapid_motion = On;
-
-    // ── 1. Z to home ────────────────────────────────────────────────────────
-    if(!(ok = go_home_z(&target, plane, &plan_data)))
-        goto cleanup;
-
-    // ── 2. XY to toolsetter position ────────────────────────────────────────
-    target.values[plane->axis_0] = g59_3_offset.coord.values[plane->axis_0];
-    target.values[plane->axis_1] = g59_3_offset.coord.values[plane->axis_1];
-
-    // Notify toolsetter handler with target before the move (driver can
-    // enable/pre-position the toolsetter while the machine is in transit).
-    if(use_toolsetter)
-        grbl.on_probe_toolsetter(tool, &target, false, true);
-
-    if(!(ok = mc_line(target.values, &plan_data)))
-        goto cleanup;
-
-    // ── 3. Z to G59.3 approach height ───────────────────────────────────────
-    target.values[plane->axis_linear] = g59_3_offset.coord.values[plane->axis_linear];
-    if(!(ok = mc_line(target.values, &plan_data)))
-        goto cleanup;
-
-    // ── 4. Fast probe downward ───────────────────────────────────────────────
-    plan_data_init(&plan_data);
-    plan_data.feed_rate = settings.tool_change.seek_rate;
-
-    // probe_is_no_error: a miss returns GCProbe_Failed rather than raising an
-    // alarm, consistent with tc_probe_workpiece in tool_change.c.
-    flags.probe_is_no_error = On;
-
-    if(use_toolsetter)
-        plan_data.condition.probing_toolsetter =
-            grbl.on_probe_toolsetter(tool, NULL, true, true);
-
-    set_probe_target(&target, plane->axis_linear);
-
-    if(!(ok = mc_probe_cycle(target.values, &plan_data, flags) == GCProbe_Found))
-        goto cleanup;
-
-    // ── 5. Retract and slow probe ────────────────────────────────────────────
-    system_convert_array_steps_to_mpos(target.values, sys.probe_position);
-    target.values[plane->axis_linear] += TOOL_CHANGE_PROBE_RETRACT_DISTANCE;
-
-    flags.probe_is_no_error = Off;
-
-    if((flags.probe_is_away = settings.flags.tool_change_fast_pulloff)) {
-        // Fast pull-off: move away slowly until contact is lost
-        plan_data.feed_rate = settings.tool_change.feed_rate;
-    } else {
-        // Standard: retract a fixed distance, then re-probe slowly
-        plan_data.feed_rate = settings.tool_change.pulloff_rate;
-        if((ok = mc_line(target.values, &plan_data))) {
-            plan_data.feed_rate = settings.tool_change.feed_rate;
-            target.values[plane->axis_linear] -= (TOOL_CHANGE_PROBE_RETRACT_DISTANCE + 2.0f);
-        }
+static status_code_t run_measure_macro (void)
+{
+    // In check mode just verify the file exists.
+    if(state_get() == STATE_CHECK_MODE) {
+        vfs_stat_t st;
+        return vfs_stat(ATC_MEASURE_MACRO, &st) == 0 ? Status_OK : Status_FileOpenFailed;
     }
 
-    if(!(ok = ok && mc_probe_cycle(target.values, &plan_data, flags) == GCProbe_Found))
-        goto cleanup;
+    measure_macro_status = Status_OK;
 
-    // ── 6. Set TLO ───────────────────────────────────────────────────────────
-    if(!(sys.tlo_reference_set.mask & bit(plane->axis_linear))) {
-        // No reference yet — establish it from this probe
-        sys.tlo_reference[plane->axis_linear] = sys.probe_position[plane->axis_linear];
-        sys.tlo_reference_set.mask |= bit(plane->axis_linear);
-        report_add_realtime(Report_TLOReference);
-        grbl.report.feedback_message(Message_ReferenceTLOEstablished);
-    } else {
-        gc_set_tool_offset(ToolLengthOffset_EnableDynamic, plane->axis_linear,
-                           sys.probe_position[plane->axis_linear] -
-                           sys.tlo_reference[plane->axis_linear]);
+    vfs_file_t *file = stream_redirect_read(ATC_MEASURE_MACRO,
+                                            measure_on_error,
+                                            measure_on_eof);
+    if(file == NULL) {
+        report_message("ATC: atc_measure.ngc not found at /linuxcnc/", Message_Warning);
+        return Status_FileOpenFailed;
     }
 
-    // ── 7. Retract to home Z ─────────────────────────────────────────────────
-    plan_data_init(&plan_data);
-    plan_data.condition.rapid_motion = On;
-    target.values[plane->axis_linear] = sys.home_position[plane->axis_linear];
-    ok = mc_line(target.values, &plan_data);
+    // Pump the grblHAL realtime loop until the macro finishes.
+    // This mirrors the pattern used by tool_change() in flexihal_atc.c after
+    // atc_macro_start() + EXEC_TOOL_CHANGE.
+    protocol_execute_realtime();
 
-    if(ok)
-        protocol_buffer_synchronize();
-
-cleanup:
-    if(use_toolsetter)
-        grbl.on_probe_toolsetter(tool, NULL, true, false);
-
-    sync_position();
-
-    return ok ? Status_OK : Status_GCodeToolError;
-#else
-    return ok;
-#endif
+    return ABORTED ? Status_Reset : measure_macro_status;
 }
 
 // ---------------------------------------------------------------------------
 // tc_probe_tool()
 //
-// Measurement-only entry point for carousel tools.  Called by $TCMEASURE
-// after the NGC macro has physically loaded the tool into the spindle.
-// Does not pause for operator interaction.
+// Measurement-only entry point.  Called by $TCMEASURE after a carousel tool
+// change has physically completed; the tool is already clamped.
+// Does not move to G30, does not pause for operator interaction.
 //
 // Preconditions:
 //   - Machine homed on XYZ
 //   - Tool clamped in spindle, spindle/coolant off
+//   - atc_measure.ngc present at /linuxcnc/atc_measure.ngc
+//   - NGC expression support enabled
 //   - COMPATIBILITY_LEVEL <= 1
 // ---------------------------------------------------------------------------
 status_code_t tc_probe_tool (parser_state_t *parser_state)
@@ -253,23 +189,23 @@ status_code_t tc_probe_tool (parser_state_t *parser_state)
     if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT))
         return Status_HomingRequired;
 
-    plane_t plane;
-    get_probe_plane(&plane, &parser_state->modal);
-
-    return do_probe_sequence(&plane, gc_state.tool);
+    return run_measure_macro();
 #endif
 }
 
 // ---------------------------------------------------------------------------
 // tc_operator_unload_pause()
 //
-// Moves to home Z, optionally moves to G30, runs the pause hook, then
-// waits in STATE_TOOL_CHANGE for the operator to remove the current tool
-// and press cycle start.  Does NOT probe — used when the outgoing tool is
-// hand-loaded and the incoming tool will be picked from the carousel.
+// Moves to home Z, optionally moves to G30, runs the pause hook, then waits
+// in STATE_TOOL_CHANGE for the operator to remove the current hand-loaded
+// tool and press cycle start.  Does NOT probe.
 //
-// After cycle start the machine rapids back to home Z before returning so
-// the carousel pick sequence starts from a known safe position.
+// Used when the outgoing tool is P0 (not in carousel) and the incoming tool
+// is in the carousel.  The carousel pick sequence in atc_change.ngc runs
+// after this returns.
+//
+// After cycle start the machine rapids back to home Z so the carousel pick
+// sequence starts from a known safe position.
 // ---------------------------------------------------------------------------
 status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
 {
@@ -293,9 +229,7 @@ status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
         return Status_Reset;
 
     // ── 2. Optional move to G30 for operator access ──────────────────────────
-    if(settings.flags.tool_change_at_g30 &&
-       (sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) == (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
-
+    if(settings.flags.tool_change_at_g30) {
         coord_system_data_t g30_offset;
         settings_read_coord_data(CoordinateSystem_G30, &g30_offset);
 
@@ -318,7 +252,7 @@ status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
 
     sync_position();
 
-    // ── 3. Optional pause hook ───────────────────────────────────────────────
+    // ── 3. Optional pause hook (e.g. runs atc_pause.ngc) ────────────────────
     if(pause_hook != NULL) {
         status_code_t hook_status = pause_hook();
         if(hook_status != Status_OK)
@@ -333,7 +267,7 @@ status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
     if(ABORTED)
         return Status_Reset;
 
-    // ── 5. Z back to home — ready for carousel pick ──────────────────────────
+    // ── 5. Return to home Z — ready for carousel pick ────────────────────────
     plan_data_init(&plan_data);
     plan_data.condition.rapid_motion = On;
 
@@ -349,25 +283,26 @@ status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
 #endif
 }
 
+// ---------------------------------------------------------------------------
 // tc_manual_tool_change()
 //
 // Full manual tool change + measurement for tools not in the carousel.
-// Mirrors ToolChange_SemiAutomatic from tool_change.c with the addition of
-// the optional G30 transit.
+// Mirrors ToolChange_SemiAutomatic from grblHAL's tool_change.c.
 //
 // Sequence:
 //   1. Rapid Z to home
 //   2. If settings.flags.tool_change_at_g30: rapid XY to G30 position
-//   3. Enter STATE_TOOL_CHANGE — wait for operator to load tool and press
+//   3. Optional pause hook (e.g. atc_pause.ngc for chip cover)
+//   4. Enter STATE_TOOL_CHANGE — wait for operator to load tool and press
 //      cycle start
-//   4. Rapid Z back to home (operator may have jogged the machine)
-//   5. Probe sequence (do_probe_sequence)
-//
-// The NGC macro is responsible for restore (spindle/coolant/position) after
-// this function returns, consistent with the carousel change flow.
+//   5. Rapid Z to home (operator may have jogged during the pause)
+//   6. Run atc_measure.ngc — move to G59.3, probe, set TLO, retract
 //
 // Preconditions:
 //   - Machine homed on XYZ
+//   - Spindle/coolant already stopped by caller
+//   - atc_measure.ngc present at /linuxcnc/atc_measure.ngc
+//   - NGC expression support enabled
 //   - COMPATIBILITY_LEVEL <= 1
 // ---------------------------------------------------------------------------
 status_code_t tc_manual_tool_change (parser_state_t *parser_state)
@@ -392,13 +327,11 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
         return Status_Reset;
 
     // ── 2. Optional move to G30 for operator access ──────────────────────────
-    if(settings.flags.tool_change_at_g30 &&
-       (sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) == (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
-
+    if(settings.flags.tool_change_at_g30) {
         coord_system_data_t g30_offset;
         settings_read_coord_data(CoordinateSystem_G30, &g30_offset);
 
-        // XY move at home Z
+        // XY transit at home Z, then descend if G30 Z differs from home Z
         target.values[plane.axis_0]      = g30_offset.coord.values[plane.axis_0];
         target.values[plane.axis_1]      = g30_offset.coord.values[plane.axis_1];
         target.values[plane.axis_linear] = sys.home_position[plane.axis_linear];
@@ -406,7 +339,6 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
         if(!mc_line(target.values, &plan_data))
             return Status_Reset;
 
-        // Descend to G30 Z if it differs from home Z
         if(g30_offset.coord.values[plane.axis_linear] != sys.home_position[plane.axis_linear]) {
             target.values[plane.axis_linear] = g30_offset.coord.values[plane.axis_linear];
             if(!mc_line(target.values, &plan_data))
@@ -420,9 +352,6 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
     sync_position();
 
     // ── 3. Optional pause hook ───────────────────────────────────────────────
-    // Registered by the ATC plugin (e.g. to run atc_pause.ngc).
-    // Called after the machine has arrived at the change position so any
-    // operator signal (light, buzzer, message) fires at the right location.
     if(pause_hook != NULL) {
         status_code_t hook_status = pause_hook();
         if(hook_status != Status_OK)
@@ -430,8 +359,6 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
     }
 
     // ── 4. Enter tool change state — pause for operator ──────────────────────
-    // Sets STATE_TOOL_CHANGE; execution resumes when the operator presses
-    // cycle start (same mechanism as $TCWAIT in the NGC macros).
     parser_state->tool_change = true;
     system_set_exec_state_flag(EXEC_TOOL_CHANGE);
     protocol_execute_realtime();
@@ -439,15 +366,20 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
     if(ABORTED)
         return Status_Reset;
 
-    // ── 5. Z back to home after operator interaction ─────────────────────────
+    // ── 5. Z to home after operator interaction ──────────────────────────────
     plan_data_init(&plan_data);
     plan_data.condition.rapid_motion = On;
 
     if(!go_home_z(&target, &plane, &plan_data))
         return Status_Reset;
 
-    // ── 6. Measure ───────────────────────────────────────────────────────────
-    return do_probe_sequence(&plane, gc_state.tool);
+    if(!protocol_buffer_synchronize())
+        return Status_Reset;
+
+    sync_position();
+
+    // ── 6. Probe the new tool ────────────────────────────────────────────────
+    return run_measure_macro();
 #endif
 }
 
