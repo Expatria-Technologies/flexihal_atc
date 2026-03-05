@@ -26,6 +26,7 @@
 // Result codes for carousel operations
 typedef enum {
     CarouselOp_OK = 0,
+    CarouselOp_AlreadyRegistered,   // tool already at P0, no change made
     CarouselOp_ToolNotFound,        // tool_id not in tooltable
     CarouselOp_ToolAlreadyInPocket, // tool already has a pocket assigned
     CarouselOp_NoPocketAvailable,   // carousel is full

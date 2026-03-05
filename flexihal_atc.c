@@ -435,6 +435,14 @@ static status_code_t carousel_register (sys_state_t state, char *args)
             }
             return Status_OK;
 
+        case CarouselOp_AlreadyRegistered:
+            {
+                char msg[60];
+                snprintf(msg, sizeof(msg), "Tool %lu is already in the tooltable at P0", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
         case CarouselOp_ToolAlreadyInPocket:
             report_message("TCREG: tool is already in the carousel — use $TCADD to reassign", Message_Warning);
             return Status_GcodeValueOutOfRange;

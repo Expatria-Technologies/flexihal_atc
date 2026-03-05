@@ -628,9 +628,10 @@ carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *nam
             ov.name[sizeof(ov.name) - 1] = '\0';
             if(!rewrite_file(&ov, 1))
                 return CarouselOp_WriteError;
+            return CarouselOp_OK;  // name updated
         }
-        // Tool already registered at P0 with no name change — nothing to do
-        return CarouselOp_OK;
+        // Tool already registered at P0, no name provided — nothing to do
+        return CarouselOp_AlreadyRegistered;
     }
 
     // Brand-new tool — append as P0
