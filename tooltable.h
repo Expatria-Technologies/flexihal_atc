@@ -53,9 +53,16 @@ carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *nam
 // Finds the lowest-numbered free pocket, assigns the tool to it, and
 // persists the change to the tooltable file.
 // Returns CarouselOp_OK on success, or an error code otherwise.
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets, const char *name);
+// On success, *assigned_pocket (if non-NULL) is set to the pocket number assigned.
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets, const char *name, pocket_id_t *assigned_pocket);
 
 // Remove a tool from the carousel (clears pocket_id only — offsets persist)
 // and persists the change to the tooltable file.
 // Returns CarouselOp_OK on success, or an error code otherwise.
 carousel_op_result_t tooltable_carousel_remove (tool_id_t tool_id);
+
+// Delete a P0 tool entry from the tooltable entirely.
+// Only tools with no carousel pocket assignment may be deleted — returns
+// CarouselOp_ToolAlreadyInPocket if the tool is currently in a pocket.
+// Returns CarouselOp_OK on success, or an error code otherwise.
+carousel_op_result_t tooltable_delete (tool_id_t tool_id);

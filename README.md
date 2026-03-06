@@ -60,6 +60,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 | `$TTLOAD` | Reload the tool table from disk. |
 | `$TTLIST` | Print all entries in the tool table to the console, read directly from `/linuxcnc/tooltable.tbl`. |
 | `$TTINDEX` | Print the in-RAM pocket index to the console. Shows each tool's assigned pocket slot as currently held in memory. Useful for debugging carousel registration. |
+| `$TTDEL Tn` | Delete a tool entry from the tooltable entirely, removing the file entry and stored offsets. Only tools at P0 (not currently assigned to a carousel pocket) may be deleted. Use `$TCRM` first if the tool is in a pocket. A tool number is always required. |
 
 ## NGC Macro Files
 

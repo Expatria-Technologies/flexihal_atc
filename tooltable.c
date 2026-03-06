@@ -360,6 +360,7 @@ typedef struct {
     tool_id_t   tool_id;
     pocket_id_t new_pocket_id;
     char        name[sizeof(((tool_pocket_t*)0)->name)];  // optional: empty = no change
+    bool        delete_entry;                              // if true, omit this tool from rewritten file
 } pocket_override_t;
 
 static char filename_tmp[] = "/linuxcnc/tooltable.tmp";
@@ -388,16 +389,22 @@ static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_override
         }
 
         // Check if this tool has a pocket_id or name override
+        bool skip = false;
         for(uint8_t oi = 0; oi < n_overrides; oi++) {
             if(entry.tool.tool_id == overrides[oi].tool_id) {
-                entry.pocket_id = overrides[oi].new_pocket_id;
-                if(overrides[oi].name[0] != '\0')
-                    strncpy(entry.name, overrides[oi].name, sizeof(entry.name) - 1);
+                if(overrides[oi].delete_entry) {
+                    skip = true;
+                } else {
+                    entry.pocket_id = overrides[oi].new_pocket_id;
+                    if(overrides[oi].name[0] != '\0')
+                        strncpy(entry.name, overrides[oi].name, sizeof(entry.name) - 1);
+                }
                 break;
             }
         }
 
-        write_pocket_line(dst, &entry);
+        if(!skip)
+            write_pocket_line(dst, &entry);
     }
 
     vfs_close(src);
@@ -652,7 +659,7 @@ carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *nam
 // Public carousel API
 // ---------------------------------------------------------------------------
 
-carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets, const char *name)
+carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_pockets, const char *name, pocket_id_t *assigned_pocket)
 {
     if(!fs_available)
         return CarouselOp_TableNotLoaded;
@@ -693,6 +700,9 @@ carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_poc
             return CarouselOp_WriteError;
     }
 
+    if(assigned_pocket)
+        *assigned_pocket = free_pocket;
+
     return CarouselOp_OK;
 }
 
@@ -707,6 +717,32 @@ carousel_op_result_t tooltable_carousel_remove (tool_id_t tool_id)
         return CarouselOp_ToolNotFound;
 
     pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = -1 };
+    if(!rewrite_file(&ov, 1))
+        return CarouselOp_WriteError;
+
+    return CarouselOp_OK;
+}
+
+// ---------------------------------------------------------------------------
+// tooltable_delete() — Remove a P0 tool entry from the tooltable entirely.
+//
+// Only tools with no carousel pocket assignment (P0) may be deleted.  If the
+// tool is currently assigned to a pocket, returns CarouselOp_ToolAlreadyInPocket
+// so the caller can report a clear error without touching the file.
+// ---------------------------------------------------------------------------
+carousel_op_result_t tooltable_delete (tool_id_t tool_id)
+{
+    if(!fs_available)
+        return CarouselOp_TableNotLoaded;
+
+    tool_index_entry_t *ie = index_find(tool_id);
+    if(!ie)
+        return CarouselOp_ToolNotFound;
+
+    if(ie->pocket_id >= 1)
+        return CarouselOp_ToolAlreadyInPocket;
+
+    pocket_override_t ov = { .tool_id = tool_id, .delete_entry = true };
     if(!rewrite_file(&ov, 1))
         return CarouselOp_WriteError;
 
@@ -909,15 +945,71 @@ static void onReportOptions (bool newopt)
         report_plugin("Tool table", "0.04");
 }
 
+// $TTDEL Tn — Delete a P0 tool entry from the tooltable entirely.
+// ---------------------------------------------------------------------------
+static status_code_t delete_tool (sys_state_t state, char *args)
+{
+    if(state_get() != STATE_IDLE) {
+        report_message("TTDEL: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    if(!args || !*args || (*args != 'T' && *args != 't')) {
+        report_message("TTDEL: usage is $TTDEL Tn", Message_Warning);
+        return Status_BadNumberFormat;
+    }
+
+    uint32_t tool_id;
+    uint_fast8_t cc = 1;
+    status_code_t parse_status = read_uint(args, &cc, &tool_id);
+    if(parse_status != Status_OK) {
+        report_message("TTDEL: invalid tool number", Message_Warning);
+        return parse_status;
+    }
+
+    carousel_op_result_t result = tooltable_delete((tool_id_t)tool_id);
+
+    switch(result) {
+        case CarouselOp_OK:
+            {
+                char msg[48];
+                sprintf(msg, "Tool %lu deleted from tooltable", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_ToolNotFound:
+            report_message("TTDEL: tool not found in tooltable", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_ToolAlreadyInPocket:
+            report_message("TTDEL: tool is in a carousel pocket — use $TCRM first", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_TableNotLoaded:
+            report_message("TTDEL: tool table not loaded", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_WriteError:
+            report_message("TTDEL: failed to write tool table", Message_Warning);
+            return Status_FileReadError;
+
+        default:
+            report_message("TTDEL: unknown error", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
-        { "TTLOAD", load_tools, {}, { .str = "(re)load tool table from SD card" } },
-        { "TTLIST", list_tools, {}, { .str = "List all tools in the tool table" } },
-        { "TTINDEX", list_index, {}, { .str = "Print the RAM index (debug)" } }
+        { "TTLOAD",  load_tools,   {}, { .str = "(re)load tool table from SD card" } },
+        { "TTLIST",  list_tools,   {}, { .str = "List all tools in the tool table" } },
+        { "TTINDEX", list_index,   {}, { .str = "Print the RAM index (debug)" } },
+        { "TTDEL",   delete_tool,  {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL Tn" } }
     };
 
     static sys_commands_t tt_commands = {
