@@ -432,7 +432,8 @@ static status_code_t carousel_return (sys_state_t state, char *args)
     }
 
     // Confirm spindle is off before moving
-    if(hal.spindle.get_state(hal.spindle.context).on) {
+    spindle_ptrs_t *spindle = spindle_get(0);
+    if(spindle && spindle->get_state && spindle->get_state(spindle).on) {
         report_message("TCRETURN: spindle must be off", Message_Warning);
         return Status_GcodeValueOutOfRange;
     }
