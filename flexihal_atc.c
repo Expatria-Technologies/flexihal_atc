@@ -34,6 +34,9 @@
 #include "grbl/ngc_params.h"
 #include "tooltable.h"
 #include "atc_tool_change.h"   // tc_probe_tool, tc_manual_tool_change
+
+// Forward declaration — atc_macro_start is defined after the command handlers
+static status_code_t atc_macro_start (const char *filename);
 #endif
 
 //#include "flexihal_atc.h"
