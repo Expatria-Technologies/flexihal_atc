@@ -1090,7 +1090,7 @@ void tooltable_init (void)
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
-    grbl.tool_table.n_tools         = 0;
+    grbl.tool_table.n_tools         = 1;
     grbl.tool_table.get_tool        = getTool;
     grbl.tool_table.reload           = reload_tools;
     grbl.tool_table.set_tool        = setTool;
