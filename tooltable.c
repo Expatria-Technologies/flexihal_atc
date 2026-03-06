@@ -622,22 +622,19 @@ carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *nam
 
     tool_index_entry_t *ie = index_find(tool_id);
 
-    if(ie && ie->pocket_id >= 1)
-        return CarouselOp_ToolAlreadyInPocket;   // already in carousel, use $TCADD to reassign
-
     if(ie) {
-        // Tool exists as P0 — update name only if one was provided
+        // Tool already exists — update name if one was provided, preserve pocket
         if(name && *name) {
             pocket_override_t ov = {0};
             ov.tool_id       = tool_id;
-            ov.new_pocket_id = 0;   // keep at P0
+            ov.new_pocket_id = ie->pocket_id;   // preserve existing pocket
             strncpy(ov.name, name, sizeof(ov.name) - 1);
             ov.name[sizeof(ov.name) - 1] = '\0';
             if(!rewrite_file(&ov, 1))
                 return CarouselOp_WriteError;
-            return CarouselOp_OK;  // name updated
+            return CarouselOp_OK;
         }
-        // Tool already registered at P0, no name provided — nothing to do
+        // Tool already registered, no name provided — nothing to do
         return CarouselOp_AlreadyRegistered;
     }
 
@@ -979,9 +976,9 @@ static status_code_t register_tool (sys_state_t state, char *args)
             {
                 char msg[80];
                 if(name && *name)
-                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0 (%s)", (unsigned long)tool_id, name);
+                    snprintf(msg, sizeof(msg), "Tool %lu updated in tooltable (%s)", (unsigned long)tool_id, name);
                 else
-                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0", (unsigned long)tool_id);
+                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable", (unsigned long)tool_id);
                 report_message(msg, Message_Info);
             }
             return Status_OK;
@@ -989,14 +986,10 @@ static status_code_t register_tool (sys_state_t state, char *args)
         case CarouselOp_AlreadyRegistered:
             {
                 char msg[60];
-                snprintf(msg, sizeof(msg), "Tool %lu is already in the tooltable at P0", (unsigned long)tool_id);
+                snprintf(msg, sizeof(msg), "Tool %lu already in tooltable — no changes made", (unsigned long)tool_id);
                 report_message(msg, Message_Info);
             }
             return Status_OK;
-
-        case CarouselOp_ToolAlreadyInPocket:
-            report_message("TTREG: tool is already in a carousel pocket — use $TCADD to reassign", Message_Warning);
-            return Status_GcodeValueOutOfRange;
 
         case CarouselOp_TableNotLoaded:
             report_message("TTREG: tool table not loaded", Message_Warning);

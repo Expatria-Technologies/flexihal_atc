@@ -393,8 +393,78 @@ static status_code_t carousel_add (sys_state_t state, char *args)
 #endif
 }
 
-// $TCRM [Tn]  — Clear a carousel pocket assignment, moving the tool to P0.
+// $TCRETURN  — Return the current spindle tool to its carousel pocket.
 //
+// Checks that the current tool has a carousel pocket assigned, sets #4902 to
+// that pocket, runs atc_return.ngc to physically deposit the tool, then clears
+// the spindle state to T0.
+//
+// The machine must be homed and IDLE.  Spindle and coolant must be off.
+// After this command the spindle is empty and gc_state.tool is T0.
+
+static status_code_t carousel_return (sys_state_t state, char *args)
+{
+#if TOOLTABLE_ENABLE != 2
+    report_message("TCRETURN requires TOOLTABLE_ENABLE=2", Message_Warning);
+    return Status_GcodeUnsupportedCommand;
+#else
+    if(state_get() != STATE_IDLE) {
+        report_message("TCRETURN: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
+        report_message("TCRETURN: machine must be homed", Message_Warning);
+        return Status_HomingRequired;
+    }
+
+    tool_id_t tool_id = gc_state.tool->tool_id;
+    if(tool_id == 0) {
+        report_message("TCRETURN: no tool in spindle", Message_Warning);
+        return Status_GcodeValueOutOfRange;
+    }
+
+    pocket_id_t pocket = get_carousel_pocket(tool_id);
+    if(pocket < 1) {
+        report_message("TCRETURN: current tool has no carousel pocket — use $TCADD first", Message_Warning);
+        return Status_GcodeValueOutOfRange;
+    }
+
+    // Confirm spindle is off before moving
+    if(hal.spindle.get_state(hal.spindle.context).on) {
+        report_message("TCRETURN: spindle must be off", Message_Warning);
+        return Status_GcodeValueOutOfRange;
+    }
+
+    // Run atc_return.ngc to physically deposit the tool
+    ngc_param_set(4902, (float)pocket);
+    status_code_t result = atc_macro_start("/linuxcnc/atc_return.ngc");
+    if(result != Status_OK) {
+        report_message("TCRETURN: return motion failed", Message_Warning);
+        return result;
+    }
+
+    // Wait for macro to complete
+    protocol_execute_realtime();
+    if(ABORTED)
+        return Status_Reset;
+
+    // Clear spindle state to T0
+    memset(gc_state.tool, 0, sizeof(tool_data_t));
+    gc_state.tool_pending = 0;
+    memset(&current_tool, 0, sizeof(tool_data_t));
+    report_add_realtime(Report_Tool);
+
+    char msg[48];
+    sprintf(msg, "T%lu returned to pocket %d — spindle empty", (unsigned long)tool_id, (int)pocket);
+    report_message(msg, Message_Info);
+
+    return Status_OK;
+#endif
+}
+
+
+// $TCRM [Tn]  — Clear a carousel pocket assignment, moving the tool to P0.
 // Usage:
 //   $TCRM T3    clear tool 3's pocket assignment (moves it to P0)
 //   $TCRM       use the tool currently in the spindle
@@ -444,7 +514,7 @@ static status_code_t carousel_remove (sys_state_t state, char *args)
             report_message("TCRM: usage is $TCRM [Tn]", Message_Warning);
             return Status_BadNumberFormat;
         }
-        uint_fast8_t cc = 1;
+        uint8_t cc = 1;
         status_code_t parse_status = read_uint(args, &cc, &tool_id);
         if(parse_status != Status_OK) {
             report_message("TCRM: invalid tool number", Message_Warning);
@@ -798,6 +868,7 @@ const sys_command_t atc_command_list[] = {
     {"DRBC",      drawbar_close,      { .noargs = On  }, { .str = "Close the drawbar" }},
 #if TOOLTABLE_ENABLE == 2
     {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Deposit current spindle tool into next free carousel pocket and register it: $TCADD [Tn] [;name]" }},
+    {"TCRETURN",  carousel_return,    { .noargs = On  }, { .str = "Return current spindle tool to its carousel pocket and clear spindle to T0" }},
     {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Clear tool's carousel pocket in tooltable (does not move the tool): $TCRM [Tn]" }},
     {"TCMEASURE",   carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter (skips if already measured)" }},
     {"TCREMEASURE", carousel_remeasure, { .noargs = On  }, { .str = "Clear stored offset and re-measure current tool length against G59.3 toolsetter" }},

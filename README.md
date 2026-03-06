@@ -38,7 +38,8 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCADD [Tn] [;name]` | Deposit the current spindle tool into the next free carousel pocket and register it in the tooltable. Runs `atc_return.ngc` to physically move the tool into position. If the deposit motion fails, the pocket assignment is rolled back. Machine must be homed. |
+| `$TCADD [;name]` or `$TCADD Tn [;name]` | Deposit the current spindle tool into the next free carousel pocket and register it in the tooltable. If no tool number is given, uses the tool currently loaded (`gc_state.tool`). Reports an error if the tool is already in the carousel or tooltable. Runs `atc_return.ngc` to physically move the tool into position. If the deposit motion fails, the pocket assignment is rolled back. Machine must be homed. |
+| `$TCRETURN` | Return the current spindle tool to its carousel pocket and clear the spindle to T0. The tool must have a pocket assigned. Spindle must be off. Machine must be homed. |
 | `$TCRM [Tn]` | Clear a carousel pocket assignment, moving the tool to P0. The tool must currently have a pocket assigned (P > 0) — P0 tools are rejected. This is a purely administrative operation; the operator is responsible for physically removing the tool from the pocket first. If no tool number is given, uses the tool currently in the spindle. |
 
 ### Tool Measurement
@@ -59,7 +60,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 | `$TTLOAD` | Reload the tool table from disk. |
 | `$TTLIST` | Print all entries in the tool table to the console, read directly from `/linuxcnc/tooltable.tbl`. |
 | `$TTINDEX` | Print the in-RAM pocket index to the console. Shows each tool's assigned pocket slot as currently held in memory. Useful for debugging carousel registration. |
-| `$TTREG Tn [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered at P0, updates the name if one is given. If the tool is already in a carousel pocket, reports an error — use `$TCADD` instead. A tool number is always required. |
+| `$TTREG Tn [;name]` | Register a tool in the tooltable, or update its name if already registered. Creates a new P0 entry if the tool is not yet in the tooltable. If the tool already exists (at P0 or in a pocket), updates the name if one is given and leaves the pocket assignment unchanged. A tool number is always required. |
 | `$TTDEL Tn` | Delete a tool entry from the tooltable entirely, removing the file entry and stored offsets. Only tools at P0 may be deleted — use `$TCRM` first if the tool is in a pocket. A tool number is always required. |
 
 ## NGC Macro Files
@@ -178,7 +179,7 @@ T5 M6       ; machine moves to G30, operator loads T5, machine measures it
 2. Once the tool is measured and the spindle is idle, deposit it into the carousel:
 
 ```gcode
-$TCADD      ; machine moves T5 to the next free pocket and registers it
+$TCADD      ; uses current spindle tool (T5) — deposits into next free pocket
 ```
 
 After `$TCADD` the spindle is empty. Load the next tool manually or issue another M6.
