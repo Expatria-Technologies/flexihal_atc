@@ -35,8 +35,9 @@
 #include "tooltable.h"
 #include "atc_tool_change.h"   // tc_probe_tool, tc_manual_tool_change
 
-// Forward declaration — atc_macro_start is defined after the command handlers
+// Forward declarations — defined after the command handlers
 static status_code_t atc_macro_start (const char *filename);
+static pocket_id_t get_carousel_pocket (tool_id_t tool_id);
 #endif
 
 //#include "flexihal_atc.h"
@@ -514,7 +515,7 @@ static status_code_t carousel_remove (sys_state_t state, char *args)
             report_message("TCRM: usage is $TCRM [Tn]", Message_Warning);
             return Status_BadNumberFormat;
         }
-        uint8_t cc = 1;
+        uint_fast8_t cc = 1;
         status_code_t parse_status = read_uint(args, &cc, &tool_id);
         if(parse_status != Status_OK) {
             report_message("TCRM: invalid tool number", Message_Warning);
@@ -578,9 +579,20 @@ static pocket_id_t get_carousel_pocket (tool_id_t tool_id)
 // ---------------------------------------------------------------------------
 
 static on_macro_return_ptr atc_on_macro_return = NULL;
+static vfs_file_t *atc_macro_file = NULL;
 
 static void atc_macro_end (void)
 {
+    // Unwind any dangling o-word flow control state (open if/while blocks)
+    // associated with this file, matching the cleanup macros.c performs in
+    // end_macro() via ngc_flowctrl_unwind_stack().
+    if(atc_macro_file) {
+#if NGC_EXPRESSIONS_ENABLE
+        ngc_flowctrl_unwind_stack(atc_macro_file);
+#endif
+        atc_macro_file = NULL;
+    }
+
     // Restore the macro return handler we displaced
     grbl.on_macro_return = atc_on_macro_return;
     atc_on_macro_return = NULL;
@@ -625,6 +637,8 @@ static status_code_t atc_macro_start (const char *filename)
         report_message("ATC: macro file not found", Message_Warning);
         return Status_FileOpenFailed;
     }
+
+    atc_macro_file = file;
 
     // Displace any existing macro return handler, install ours
     atc_on_macro_return = grbl.on_macro_return;
