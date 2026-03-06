@@ -28,6 +28,20 @@ void tc_set_pause_hook (tc_pause_hook_ptr hook);
 // Returns Status_OK on success, or an error code otherwise.
 status_code_t tc_probe_tool (parser_state_t *parser_state);
 
+// Force re-measurement of the current tool, regardless of whether a stored
+// offset already exists.  Clears the tool's Z entry in the tool table first
+// so the skip guard in atc_measure.ngc falls through, then probes normally.
+//
+// Use after physically replacing a tool in the spindle.
+//
+// Requires:
+//   - /linuxcnc/atc_measure.ngc present on the VFS
+//   - NGC expression support enabled in config.h (required for PRM[], G10 L11)
+//   - COMPATIBILITY_LEVEL <= 1
+//
+// Returns Status_OK on success, or an error code otherwise.
+status_code_t tc_reprobe_tool (parser_state_t *parser_state);
+
 // Pause for the operator to remove a hand-loaded tool before the carousel
 // picks the next one.  Moves to home Z, optionally to G30, runs the pause
 // hook, then waits in STATE_TOOL_CHANGE for cycle start.  Does NOT probe.

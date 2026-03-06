@@ -195,6 +195,36 @@ status_code_t tc_probe_tool (parser_state_t *parser_state)
 }
 
 // ---------------------------------------------------------------------------
+// tc_reprobe_tool()
+//
+// Force re-measurement regardless of whether a stored offset already exists.
+// Clears the current tool's Z offset in the tool table (G10 L1 P<n> Z0) so
+// that the skip-if-already-measured guard in atc_measure.ngc falls through,
+// then delegates to run_measure_macro() as normal.
+//
+// Use this after physically replacing a tool in the spindle.
+// ---------------------------------------------------------------------------
+status_code_t tc_reprobe_tool (parser_state_t *parser_state)
+{
+#if COMPATIBILITY_LEVEL > 1
+    return Status_GcodeUnsupportedCommand;
+#else
+    if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT))
+        return Status_HomingRequired;
+
+    // Clear the stored Z offset so atc_measure.ngc probes unconditionally.
+    // gc_execute_block() runs a single gcode line through the parser inline.
+    char cmd[24];
+    snprintf(cmd, sizeof(cmd), "G10L1P%dZ0", (int)gc_state.tool->tool_id);
+    status_code_t status = gc_execute_block(cmd);
+    if(status != Status_OK)
+        return status;
+
+    return run_measure_macro();
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // tc_operator_unload_pause()
 //
 // Moves to home Z, optionally moves to G30, runs the pause hook, then waits

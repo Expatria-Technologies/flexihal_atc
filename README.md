@@ -48,13 +48,18 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter, store the measured gauge length in the tool table via `G10 L11`, and activate the offset via `G43`. Called automatically at the end of every carousel tool change macro. |
+| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter, store the measured gauge length in the tool table via `G10 L11`, and activate the offset via `G43`. Skips measurement if a valid offset is already stored. Called automatically at the end of every carousel tool change macro. |
+| `$TCREMEASURE` | Clear the stored offset for the current tool and re-probe unconditionally. Use after physically replacing a tool in the spindle. |
 
 ### Tooltable
+
+These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
 | `$TTLOAD` | Reload the tool table from disk. |
+| `$TTLIST` | Print all entries in the tool table to the console, read directly from `/linuxcnc/tooltable.tbl`. |
+| `$TTINDEX` | Print the in-RAM pocket index to the console. Shows each tool's assigned pocket slot as currently held in memory. Useful for debugging carousel registration. |
 
 ## NGC Macro Files
 

@@ -835,6 +835,23 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
     return result;
 }
 
+static status_code_t carousel_remeasure (sys_state_t state, char *args)
+{
+    if(state_get() != STATE_IDLE) {
+        report_message("TCREMEASURE: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    report_message("ATC: clearing stored offset and re-measuring tool length", Message_Info);
+
+    status_code_t result = tc_reprobe_tool(atc_parser_state);
+
+    if(result != Status_OK)
+        report_message("TCREMEASURE: probe failed", Message_Warning);
+
+    return result;
+}
+
 #endif // TOOLTABLE_ENABLE == 2
 
 // ---------------------------------------------------------------------------
@@ -848,7 +865,8 @@ const sys_command_t atc_command_list[] = {
     {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn [;name]" }},
     {"TCREG",     carousel_register,  { .noargs = Off }, { .str = "Register tool in tooltable at P0: $TCREG Tn [;name]" }},
     {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Clear tool's carousel pocket in tooltable (does not move the tool): $TCRM [Tn]" }},
-    {"TCMEASURE", carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter" }},
+    {"TCMEASURE",   carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter (skips if already measured)" }},
+    {"TCREMEASURE", carousel_remeasure, { .noargs = On  }, { .str = "Clear stored offset and re-measure current tool length against G59.3 toolsetter" }},
 #endif
 };
 
