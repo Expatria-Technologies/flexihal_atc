@@ -1,0 +1,82 @@
+; P200.macro — ATC geometry configuration (four-positions style)
+;
+; Copy this file to the grblHAL filesystem root and set the startup line:
+;
+;   $N0=G65P200
+;
+; This ensures geometry parameters are loaded automatically on every boot.
+; To set the startup line, send the above command from MDI or a terminal.
+;
+; This macro sets the geometry parameters used by atc_change.ngc and
+; atc_return.ngc.  All coordinates are machine coordinates (G53).
+;
+; ── four-positions concept ───────────────────────────────────────────
+;
+;   Unloading a tool (deposit into pocket):   P1 → P2 → P3 [open]  → P4
+;   Loading a tool  (pick up from pocket):    P4 → P3 [close] → P2 → P1
+;
+;   Position 1 — Safe:     clear of the carousel, safe for any XY travel
+;   Position 2 — Approach: aligned with the pocket, above/beside entry point
+;   Position 3 — Engage:   tool fully seated in pocket (drawbar actuates here)
+;   Position 4 — Exit:     spindle clear of pocket after release or clamp
+;
+;   Pocket positioning (rotating the carousel to the correct pocket) is handled
+;   externally — either by a dedicated axis (A/B) or by a separate MCU.
+;   The carousel must be at the correct pocket before the spindle moves to P2.
+;
+; ── Parameters set by this macro ─────────────────────────────────────────────
+;
+;   #4920  P1 X  Safe position X
+;   #4921  P1 Y  Safe position Y
+;   #4922  P1 Z  Safe position Z  (typically Z home = 0)
+;
+;   #4923  P2 X  Approach X
+;   #4924  P2 Y  Approach Y
+;   #4925  P2 Z  Approach Z
+;
+;   #4926  P3 X  Engage X
+;   #4927  P3 Y  Engage Y
+;   #4928  P3 Z  Engage Z
+;
+;   #4929  P4 X  Exit X
+;   #4930  P4 Y  Exit Y
+;   #4931  P4 Z  Exit Z
+;
+;   #4932        Feed rate for all carousel positioning moves (mm/min)
+;
+
+; ── Position 1: Safe ──────────────────────────────────────────────────────────
+#4920 = 0.0         ; X (machine coords)
+#4921 = 200.0       ; Y
+#4922 = 0.0         ; Z — typically Z home
+
+; ── Position 2: Approach ──────────────────────────────────────────────────────
+#4923 = 50.0        ; X (machine coords)
+#4924 = 200.0       ; Y
+#4925 = -10.0       ; Z
+
+; ── Position 3: Engage ────────────────────────────────────────────────────────
+#4926 = 50.0        ; X (machine coords)
+#4927 = 200.0       ; Y
+#4928 = -45.0       ; Z — tool fully seated
+
+; ── Position 4: Exit ──────────────────────────────────────────────────────────
+#4929 = 50.0        ; X (machine coords)
+#4930 = 200.0       ; Y
+#4931 = -10.0       ; Z
+
+; ── Feed rate ─────────────────────────────────────────────────────────────────
+#4932 = 500.0       ; mm/min — all carousel positioning moves
+
+; ── Toolsetter ────────────────────────────────────────────────────────────────
+; Toolsetter XYZ is read from G59.3 at probe time (#5381, #5382, #5383).
+; Configure G59.3 via G10 L2 P9 or the grblHAL coordinate system settings.
+
+; ── Carousel homing ───────────────────────────────────────────────────────────
+; Home the carousel
+; G65 P7 performs the carousel homing cycle; P201 is picohal specific to check success.
+G65 P7 S3 F16 R1 A1
+g4p1
+G65 P201
+
+M2

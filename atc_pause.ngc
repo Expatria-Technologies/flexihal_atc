@@ -1,13 +1,24 @@
 ; atc_pause.ngc - Operator notification hook for manual tool change
 ;
-; Called after the machine has moved to the change position (G30 or home Z)
-; but before the operator pause.  The ATC plugin has already reported the
-; tool name/comment to the stream if one exists in the tool table.
+; Called after the outgoing carousel tool has been returned (if applicable)
+; and before the operator pause.  The ATC plugin has already reported the
+; incoming tool name/comment to the stream if one exists in the tool table.
 ;
-; #4900 = incoming tool number
-; #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
+; Parameters set by plugin before this macro runs:
+;   #4900 = incoming tool number
+;   #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
 ;
-; Add any operator signalling here (lights, buzzers, etc.)
-;
+; Geometry parameters — set once by G65 P200 in your startup macro:
+;   #4920-#4922  Position 1: Safe XYZ  (used for Z clearance before XY move)
+
+; ── Move to manual change position (G30) ─────────────────────────────────────
+; G30 (second home position) is used as the manual tool change position.
+; Set it once via G10 L2 P30 or the grblHAL coordinate system settings.
+G53 G0 Z#4922
+G30
+
+; ── Notify operator ───────────────────────────────────────────────────────────
+; Add any additional signalling here (lights, buzzers, etc.)
+(MSG, Load tool #4900 and press cycle start)
 
 M2
