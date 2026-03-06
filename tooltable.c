@@ -623,7 +623,7 @@ carousel_op_result_t tooltable_register_tool (tool_id_t tool_id, const char *nam
     tool_index_entry_t *ie = index_find(tool_id);
 
     if(ie && ie->pocket_id >= 1)
-        return CarouselOp_ToolAlreadyInPocket;   // already in carousel, use $TCREG not applicable
+        return CarouselOp_ToolAlreadyInPocket;   // already in carousel, use $TCADD to reassign
 
     if(ie) {
         // Tool exists as P0 — update name only if one was provided
@@ -945,6 +945,73 @@ static void onReportOptions (bool newopt)
         report_plugin("Tool table", "0.04");
 }
 
+// $TTREG Tn [;name] — Register a tool in the tooltable at P0.
+// ---------------------------------------------------------------------------
+static status_code_t register_tool (sys_state_t state, char *args)
+{
+    if(state_get() != STATE_IDLE) {
+        report_message("TTREG: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    if(!args || !*args || (*args != 'T' && *args != 't')) {
+        report_message("TTREG: usage is $TTREG Tn [;name]", Message_Warning);
+        return Status_BadNumberFormat;
+    }
+
+    uint32_t tool_id;
+    const char *name = NULL;
+
+    uint_fast8_t cc = 1;
+    status_code_t parse_status = read_uint(args, &cc, &tool_id);
+    if(parse_status != Status_OK) {
+        report_message("TTREG: invalid tool number", Message_Warning);
+        return parse_status;
+    }
+    while(args[cc] == ' ' || args[cc] == '\t') cc++;
+    if(args[cc] == ';')
+        name = &args[cc + 1];
+
+    carousel_op_result_t result = tooltable_register_tool((tool_id_t)tool_id, name);
+
+    switch(result) {
+        case CarouselOp_OK:
+            {
+                char msg[80];
+                if(name && *name)
+                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0 (%s)", (unsigned long)tool_id, name);
+                else
+                    snprintf(msg, sizeof(msg), "Tool %lu registered in tooltable as P0", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_AlreadyRegistered:
+            {
+                char msg[60];
+                snprintf(msg, sizeof(msg), "Tool %lu is already in the tooltable at P0", (unsigned long)tool_id);
+                report_message(msg, Message_Info);
+            }
+            return Status_OK;
+
+        case CarouselOp_ToolAlreadyInPocket:
+            report_message("TTREG: tool is already in a carousel pocket — use $TCADD to reassign", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_TableNotLoaded:
+            report_message("TTREG: tool table not loaded", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+
+        case CarouselOp_WriteError:
+            report_message("TTREG: failed to write tool table", Message_Warning);
+            return Status_FileReadError;
+
+        default:
+            report_message("TTREG: unknown error", Message_Warning);
+            return Status_GcodeValueOutOfRange;
+    }
+}
+
 // $TTDEL Tn — Delete a P0 tool entry from the tooltable entirely.
 // ---------------------------------------------------------------------------
 static status_code_t delete_tool (sys_state_t state, char *args)
@@ -1006,10 +1073,11 @@ static status_code_t delete_tool (sys_state_t state, char *args)
 void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
-        { "TTLOAD",  load_tools,   {}, { .str = "(re)load tool table from SD card" } },
-        { "TTLIST",  list_tools,   {}, { .str = "List all tools in the tool table" } },
-        { "TTINDEX", list_index,   {}, { .str = "Print the RAM index (debug)" } },
-        { "TTDEL",   delete_tool,  {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL Tn" } }
+        { "TTLOAD",  load_tools,     {}, { .str = "(re)load tool table from SD card" } },
+        { "TTLIST",  list_tools,     {}, { .str = "List all tools in the tool table" } },
+        { "TTINDEX", list_index,     {}, { .str = "Print the RAM index (debug)" } },
+        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG Tn [;name]" } },
+        { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL Tn" } }
     };
 
     static sys_commands_t tt_commands = {
