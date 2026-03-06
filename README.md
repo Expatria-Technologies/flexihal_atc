@@ -19,10 +19,6 @@ If `TOOLTABLE_ENABLE` is not set to `2`, only the spindle interlock and drawbar 
 - Optional `atc_pause.ngc` hook for operator notification (lights, buzzers, messages)
 - Automatic creation of tooltable directory and file on first mount
 
-## Todo
-
-- [ ] Ensuring correct interaction with persistent TLO reference
-
 ## Commands
 
 All commands can be used from the terminal or embedded in gcode programs.
@@ -44,7 +40,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 |---------|-------------|
 | `$TCADD [Tn] [;name]` | Add tool to the carousel. Assigns the next free pocket. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. Existing tool offsets are preserved. |
 | `$TCREG [Tn] [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered, updates the name if one is given. If the tool is already in the carousel, reports an error — use `$TCADD` instead. |
-| `$TCRM Tn` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. |
+| `$TCRM [Tn]` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. If no tool number is given, removes the tool currently in the spindle; requires tool-present sensor if configured.
 
 ### Tool Measurement
 
@@ -52,7 +48,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter and set the tool length offset. Called automatically at the end of every carousel tool change macro. |
+| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter, store the measured gauge length in the tool table via `G10 L11`, and activate the offset via `G43`. Called automatically at the end of every carousel tool change macro. |
 
 ### Tooltable
 
@@ -66,8 +62,9 @@ The following macro files must be present on the filesystem at `/linuxcnc/` when
 
 | File | Purpose |
 |------|---------|
-| `atc_change.ngc` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then measures |
+| `atc_change.ngc` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then calls `$TCMEASURE` to measure |
 | `atc_return.ngc` | Returns current tool to its carousel pocket (used when incoming tool is not in carousel) |
+| `atc_measure.ngc` | Tool length measurement — cancels active TLO, probes against G59.3 toolsetter, stores gauge length via `G10 L11`, activates offset via `G43`. Reads feed rates and probing distance from `$342`–`$345` via `PRM[]` expressions |
 
 The following file is **optional**:
 
@@ -78,6 +75,16 @@ The following file is **optional**:
 If any required macro file is missing, M6 will report a warning and abort rather than leaving the machine in an undefined state.
 
 > **Note:** Do not add `$TCMEASURE` to `atc_pause.ngc`. Measurement is handled automatically by the plugin after the operator presses cycle start.
+
+### Tool Length Offsets
+
+Tool length offsets are stored as absolute gauge lengths in the tool table via `G10 L11`, using G59.3 as the fixture reference. This means:
+
+- Each tool's length is persistent across power cycles — no re-probing is needed unless the tool is physically replaced
+- There is no reference tool requirement; all tools are measured on the same absolute scale
+- `G43` (activated automatically after each probe) loads the stored offset from the table for the current tool
+
+The toolsetter position (G59.3 X, Y, Z) must be configured accurately. G59.3 Z should be set to the toolsetter approach height — just above the trigger point. The probe sequence reads `$342`–`$345` for distances and feed rates.
 
 ### Parameters Set by Plugin
 
@@ -127,16 +134,16 @@ At the start of every M6 the plugin automatically stops the spindle and coolant.
 M6 behaviour depends on the carousel status of both the outgoing and incoming tools:
 
 ### Outgoing from carousel → Incoming from carousel
-`atc_change.ngc` runs. The outgoing tool is returned to its pocket, the incoming tool is picked up, and the new tool is measured.
+`atc_change.ngc` runs. The outgoing tool is returned to its pocket, the incoming tool is picked up, and `atc_measure.ngc` is called to probe the new tool, store its gauge length in the tool table, and activate the offset.
 
 ### Outgoing hand-loaded (P0) → Incoming from carousel
 The machine moves to home Z, optionally moves to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to **remove** the hand-loaded tool and press cycle start. Once resumed, `atc_change.ngc` runs to pick up the carousel tool and measure it.
 
 ### Outgoing from carousel → Incoming hand-loaded (P0)
-`atc_return.ngc` runs first to return the outgoing tool to its carousel pocket. The machine then moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to **load** the new tool and press cycle start. Once resumed, the tool is probed and TLO is set automatically.
+`atc_return.ngc` runs first to return the outgoing tool to its carousel pocket. The machine then moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to **load** the new tool and press cycle start. Once resumed, `atc_measure.ngc` probes the new tool, stores its gauge length, and activates the offset.
 
 ### Outgoing hand-loaded (P0) → Incoming hand-loaded (P0)
-The machine moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to swap the tool and press cycle start. Once resumed, the new tool is probed and TLO is set.
+The machine moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to swap the tool and press cycle start. Once resumed, `atc_measure.ngc` probes the new tool, stores its gauge length, and activates the offset.
 
 ### Tooltable updates after M6
 

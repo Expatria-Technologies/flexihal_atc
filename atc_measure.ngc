@@ -43,64 +43,88 @@
 ;     - stores an absolute gauge length that survives power cycles
 ;     - is consistent with the LinuxCNC G43 / G10 L11 definition
 ;
+; SKIPPING ALREADY-PROBED TOOLS
+;   If the tool table already contains a non-zero Z offset for the current
+;   tool, the probe sequence is skipped and the stored offset is activated
+;   directly via G43.  This avoids unnecessary toolsetter cycles when the
+;   carousel returns a tool that was measured in a previous M6.
+;
+;   A zero Z offset means the tool has never been probed (or was explicitly
+;   cleared with G10 L1 P<n> Z0 to force re-measurement).  No real spindle
+;   tool has a true zero gauge length, so zero is safe to use as a sentinel.
+;
+;   G65 P2 Q<tool> R2 reads the Z offset (axis index 2) for the given tool
+;   from the tool table into the built-in #<_value> parameter.
+;
 ; PROBE SEQUENCE
-;   1.  Select toolsetter probe input
-;   2.  Cancel active TLO (G49)
-;   3.  Rapid Z to home (G53 Z0)
-;   4.  Rapid XY to G59.3 toolsetter position
-;   5.  Rapid Z to G59.3 approach height
-;   6.  Fast seek probe downward — G38.3 (no-error variant) at $344
-;   7.  Abort with message if toolsetter was not triggered
-;   8.  Retract ($342 / 10) mm at $345
-;   9.  Slow locate probe — G38.2 (error-on-miss) at $343
-;   10. Store gauge length: G10 L11 P<tool> Z0
-;   11. Activate offset: G43
-;   12. Rapid Z to home
-;   13. Restore primary probe input
+;   1.  Read stored Z offset for current tool — skip to step 11 if non-zero
+;   2.  Select toolsetter probe input
+;   3.  Cancel active TLO (G49)
+;   4.  Rapid Z to home (G53 Z0)
+;   5.  Rapid XY to G59.3 toolsetter position
+;   6.  Rapid Z to G59.3 approach height
+;   7.  Fast seek probe downward — G38.3 (no-error variant) at $344
+;   8.  Abort with message if toolsetter was not triggered
+;   9.  Retract ($342 / 10) mm at $345
+;   10. Slow locate probe — G38.2 (error-on-miss) at $343
+;   11. Store gauge length: G10 L11 P<tool> Z0
+;   12. Activate offset: G43
+;   13. Rapid Z to home
+;   14. Restore primary probe input
 
-; ── 1. Select toolsetter probe ───────────────────────────────────────────────
+; ── 1. Check for existing offset — skip probe if already measured ─────────────
+; G65 P2 Q<tool> R<axis> reads the tool table offset into #<_value>.
+; Axis index 2 = Z.
+G65 P2 Q#5400 R2
+o50 if [#<_value> NE 0]
+  (print, ATC: tool #5400 already measured — activating stored offset)
+  G43
+  M2
+o50 endif
+
+; ── 2. Select toolsetter probe ───────────────────────────────────────────────
 G65 P5 Q1
 
-; ── 2. Cancel active TLO ─────────────────────────────────────────────────────
+; ── 3. Cancel active TLO ─────────────────────────────────────────────────────
 ; G49 ensures the probe result (#5063) is a raw machine coordinate.
 ; Without this, a previously active G43 offset would skew the probe target
 ; and the resulting G10 L11 calculation.
 G49
 
-; ── 3. Safe Z — machine home ─────────────────────────────────────────────────
+; ── 4. Safe Z — machine home ─────────────────────────────────────────────────
 G53 G0 Z0
 
-; ── 4. XY to toolsetter centre ───────────────────────────────────────────────
+; ── 5. XY to toolsetter centre ───────────────────────────────────────────────
 ; #5381/#5382 are the G59.3 X and Y offsets (machine coordinates, persistent).
 G53 G0 X#5381 Y#5382
 
-; ── 5. Z to approach height ──────────────────────────────────────────────────
+; ── 6. Z to approach height ──────────────────────────────────────────────────
 ; #5383 is the G59.3 Z offset — the approach height above the toolsetter tip.
 G53 G0 Z#5383
 
-; ── 6. Fast seek — G38.3 (probe toward, no error on miss) ────────────────────
+; ── 7. Fast seek — G38.3 (probe toward, no error on miss) ────────────────────
 ; Travel up to $342 mm below the approach height.
 ; PRM[344] = $344 seek rate.   PRM[342] = $342 probing distance.
 G38.3 Z[#5383 - PRM[342]] F[PRM[344]]
 
-; ── 7. Abort if toolsetter not triggered ─────────────────────────────────────
+; ── 8. Abort if toolsetter not triggered ─────────────────────────────────────
 ; #5069 = 1 when the last probe cycle triggered, 0 if it did not.
 o100 if [#5069 NE 1]
   (abort, ATC measure: toolsetter not triggered on seek — check $342 and G59.3 Z)
 o100 endif
 
-; ── 8. Retract before slow probe ─────────────────────────────────────────────
+; ── 9. Retract before slow probe ─────────────────────────────────────────────
 ; Pull off ~10% of probing distance to clear contact.
 ; PRM[345] = $345 pulloff rate.
 G91
 G1 Z[PRM[342] / 10] F[PRM[345]]
 G90
 
-; ── 9. Slow locate probe — G38.2 (probe toward, error on miss) ───────────────
+; ── 10. Slow locate probe — G38.2 (probe toward, error on miss) ──────────────
 ; PRM[343] = $343 locate/feed rate.
 G38.2 Z[#5383 - PRM[342]] F[PRM[343]]
 
-; ── 10. Store gauge length in tool table ─────────────────────────────────────
+; ── 11. Store gauge length in tool table ─────────────────────────────────────
 ; G10 L11 sets the tool table entry for tool P such that, with G43 active and
 ; the machine in G59.3, the compensated Z coordinate reads as the given value.
 ; Z0 means the tool tip is at the G59.3 Z origin (the toolsetter trigger point).
@@ -109,16 +133,16 @@ G38.2 Z[#5383 - PRM[342]] F[PRM[343]]
 ; #5400 = currently loaded tool number (set by the last Tn M6).
 G10 L11 P#5400 Z0
 
-; ── 11. Activate tool length offset ──────────────────────────────────────────
+; ── 12. Activate tool length offset ──────────────────────────────────────────
 ; G43 without H reloads the offset for the current tool from the table.
 G43
 
 (print, ATC: tool #5400 measured and stored)
 
-; ── 12. Retract to home Z ────────────────────────────────────────────────────
+; ── 13. Retract to home Z ────────────────────────────────────────────────────
 G53 G0 Z0
 
-; ── 13. Restore primary probe ────────────────────────────────────────────────
+; ── 14. Restore primary probe ────────────────────────────────────────────────
 G65 P5 Q0
 
 M2
