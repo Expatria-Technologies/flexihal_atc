@@ -40,7 +40,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 |---------|-------------|
 | `$TCADD [Tn] [;name]` | Add tool to the carousel. Assigns the next free pocket. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. Existing tool offsets are preserved. |
 | `$TCREG [Tn] [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered, updates the name if one is given. If the tool is already in the carousel, reports an error — use `$TCADD` instead. |
-| `$TCRM [Tn]` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. If no tool number is given, removes the tool currently in the spindle; requires tool-present sensor if configured.
+| `$TCRM [Tn]` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. If no tool number is given, removes the tool currently in the spindle (requires tool-present sensor if configured). This is a purely administrative operation — the operator is responsible for physically removing the tool from the carousel pocket first. |
 
 ### Tool Measurement
 
