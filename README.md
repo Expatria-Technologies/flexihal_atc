@@ -38,7 +38,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCADD [Tn] [;name]` | Add tool to the carousel. Assigns the next free pocket. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. Existing tool offsets are preserved. |
+| `$TCADD [Tn] [;name]` | Deposit the current spindle tool into the next free carousel pocket and register it in the tooltable. If no tool number is given, uses the tool currently in the spindle. An optional name can be appended after a semicolon. If the deposit motion fails, the pocket assignment is rolled back automatically. |
 | `$TCREG [Tn] [;name]` | Register a tool in the tooltable at P0 (known but not in the carousel). If the tool is already registered, updates the name if one is given. If the tool is already in the carousel, reports an error — use `$TCADD` instead. |
 | `$TCRM [Tn]` | Remove tool from the carousel. Clears the pocket assignment while preserving offsets. If no tool number is given, removes the tool currently in the spindle (requires tool-present sensor if configured). This is a purely administrative operation — the operator is responsible for physically removing the tool from the carousel pocket first. |
 
@@ -166,14 +166,31 @@ This message is sent regardless of whether `atc_pause.ngc` is present.
 
 ## Loading a New Tool into the Carousel
 
-To perform a manual tool load and register it in the carousel:
+To load a new tool into the carousel for the first time:
+
+1. Issue a manual tool change to get the tool into the spindle and measured:
 
 ```gcode
-T5 M6       ; swap to tool 5 — triggers manual change flow and measurement
-$TCADD      ; register the current tool (T5) in the next free carousel pocket
+T5 M6       ; machine moves to G30, operator loads T5, machine measures it
 ```
 
-To register a tool in the tooltable without assigning it a carousel pocket:
+2. Once the tool is measured and the spindle is idle, deposit it into the carousel:
+
+```gcode
+$TCADD      ; machine moves T5 to the next free pocket and registers it
+```
+
+After `$TCADD` the spindle is empty. Load the next tool manually or issue another M6.
+
+`$TCADD` performs the physical deposit motion via `atc_return.ngc` and writes the pocket assignment to the tooltable. If the deposit motion fails for any reason, the pocket assignment is rolled back automatically so the tooltable stays consistent.
+
+An optional name can be supplied:
+
+```gcode
+$TCADD ;12mm EM
+```
+
+To register a tool in the tooltable without assigning it a carousel pocket (i.e. a hand-loaded tool you want offsets preserved for):
 
 ```gcode
 $TCREG T7 ;6mm ballnose   ; add tool 7 to the tooltable as P0

@@ -279,15 +279,17 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 
 #if TOOLTABLE_ENABLE == 2
 
-// $TCADD Tn [;name]  — Add the tool currently in the spindle to a free carousel pocket.
+// $TCADD [Tn] [;name]  — Deposit the current spindle tool into the next free
+// carousel pocket and register it in the tooltable.
 //
 // Usage:
-//   $TCADD T3            register tool 3 in the next free pocket
-//   $TCADD T3 ;12mm EM   register tool 3 with a description
-//   $TCADD               use current spindle tool
+//   $TCADD              use current spindle tool
+//   $TCADD T3           use tool 3 (must match tool in spindle)
+//   $TCADD T3 ;12mm EM  as above, with a name
 //
-// The machine must be IDLE and a tool must be present in the spindle.
-// The tooltable plugin assigns the pocket number automatically.
+// The machine must be IDLE and homed.  The tool must be clamped in the spindle.
+// The pocket assignment is written to the tooltable first; if the deposit motion
+// fails the pocket assignment is rolled back via $TCRM so the table stays clean.
 
 static status_code_t carousel_add (sys_state_t state, char *args)
 {
@@ -295,14 +297,17 @@ static status_code_t carousel_add (sys_state_t state, char *args)
     report_message("TCADD requires TOOLTABLE_ENABLE=2", Message_Warning);
     return Status_InvalidStatement;
 #else
-    // Must be idle
     if(state_get() != STATE_IDLE) {
         report_message("TCADD: machine must be IDLE", Message_Warning);
         return Status_InvalidStatement;
     }
 
-    // Parse tool number from args (expect "Tn [;name]").
-    // If no argument is given, default to the tool currently in the spindle.
+    if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
+        report_message("TCADD: machine must be homed", Message_Warning);
+        return Status_HomingRequired;
+    }
+
+    // ── Parse arguments ──────────────────────────────────────────────────────
     uint32_t tool_id;
     const char *name = NULL;
 
@@ -314,7 +319,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         }
     } else {
         if(*args != 'T' && *args != 't') {
-            report_message("TCADD: usage is $TCADD Tn [;name]  (or $TCADD to use current tool)", Message_Warning);
+            report_message("TCADD: usage is $TCADD [Tn] [;name]", Message_Warning);
             return Status_BadNumberFormat;
         }
         uint_fast8_t cc = 1;
@@ -323,13 +328,12 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             report_message("TCADD: invalid tool number", Message_Warning);
             return parse_status;
         }
-        // Advance past whitespace and look for optional ";name"
         while(args[cc] == ' ' || args[cc] == '\t') cc++;
         if(args[cc] == ';')
-            name = &args[cc + 1];   // point past the semicolon
+            name = &args[cc + 1];
     }
 
-    // Optional: check that a tool is physically present in the spindle
+    // ── Tool present check ───────────────────────────────────────────────────
     if(atc.flags.tool_present_active) {
         read_atc_ports();
         if(!atc_status.toolpresent_status) {
@@ -338,21 +342,16 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         }
     }
 
-    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets, name);
+    // ── Assign pocket in tooltable ───────────────────────────────────────────
+    pocket_id_t assigned_pocket = 0;
+    carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets, name, &assigned_pocket);
 
     switch(result) {
         case CarouselOp_OK:
-            {
-                char msg[60];
-                sprintf(msg, "Tool %lu added to carousel (offsets preserved)", (unsigned long)tool_id);
-                report_message(msg, Message_Info);
-            }
-            return Status_OK;
-
+            break;
         case CarouselOp_ToolAlreadyInPocket:
             report_message("TCADD: tool already has a pocket assigned", Message_Warning);
             return Status_GcodeValueOutOfRange;
-
         case CarouselOp_NoPocketAvailable:
             {
                 char msg[60];
@@ -360,19 +359,34 @@ static status_code_t carousel_add (sys_state_t state, char *args)
                 report_message(msg, Message_Warning);
             }
             return Status_GcodeValueOutOfRange;
-
         case CarouselOp_TableNotLoaded:
             report_message("TCADD: tool table not loaded", Message_Warning);
             return Status_GcodeValueOutOfRange;
-
         case CarouselOp_WriteError:
             report_message("TCADD: failed to write tool table", Message_Warning);
             return Status_FileReadError;
-
         default:
             report_message("TCADD: unknown error", Message_Warning);
             return Status_GcodeValueOutOfRange;
     }
+
+    // ── Deposit tool into assigned pocket via atc_return.ngc ─────────────────
+    // Set #4902 = outgoing pocket so atc_return.ngc knows where to deposit.
+    ngc_param_set(4902, (float)assigned_pocket);
+
+    status_code_t motion_result = atc_macro_start("/linuxcnc/atc_return.ngc");
+    if(motion_result != Status_OK) {
+        // Roll back the pocket assignment so the table stays consistent.
+        tooltable_carousel_remove((tool_id_t)tool_id);
+        report_message("TCADD: deposit motion failed — pocket assignment rolled back", Message_Warning);
+        return motion_result;
+    }
+
+    char msg[60];
+    sprintf(msg, "T%lu deposited in pocket %u", (unsigned long)tool_id, (unsigned)assigned_pocket);
+    report_message(msg, Message_Info);
+
+    return Status_OK;
 #endif
 }
 
@@ -862,7 +876,7 @@ const sys_command_t atc_command_list[] = {
     {"DRBO",      drawbar_open,       { .noargs = On  }, { .str = "Open the drawbar" }},
     {"DRBC",      drawbar_close,      { .noargs = On  }, { .str = "Close the drawbar" }},
 #if TOOLTABLE_ENABLE == 2
-    {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Add tool to carousel: $TCADD Tn [;name]" }},
+    {"TCADD",     carousel_add,       { .noargs = Off }, { .str = "Deposit current spindle tool into next free carousel pocket and register it: $TCADD [Tn] [;name]" }},
     {"TCREG",     carousel_register,  { .noargs = Off }, { .str = "Register tool in tooltable at P0: $TCREG Tn [;name]" }},
     {"TCRM",      carousel_remove,    { .noargs = Off }, { .str = "Clear tool's carousel pocket in tooltable (does not move the tool): $TCRM [Tn]" }},
     {"TCMEASURE",   carousel_measure,   { .noargs = On  }, { .str = "Measure current tool length against G59.3 toolsetter (skips if already measured)" }},
