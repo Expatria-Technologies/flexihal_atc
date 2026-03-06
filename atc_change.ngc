@@ -32,6 +32,8 @@ o100 if [#4902 GT 0]
   ; Position the carousel to pocket #4902 here.
   ; Example: G0 A[#4902 * 18.0]   (if A axis drives the carousel)
   ;          or issue an M-code to the carousel MCU
+  G65 P7 S3 F16 R1 A1#4902
+  G65 P201
 
   ; Approach outgoing pocket (P2)
   G53 G1 X#4923 Y#4924 F#4932
@@ -51,6 +53,8 @@ o100 endif
 ; Position the carousel to pocket #4901 here.
 ; Example: G0 A[#4901 * 18.0]   (if A axis drives the carousel)
 ;          or issue an M-code to the carousel MCU
+  G65 P7 S3 F16 R1 A1#4901
+  G65 P201
 
 ; ── Load: pick up incoming tool ───────────────────────────────────────────────
 

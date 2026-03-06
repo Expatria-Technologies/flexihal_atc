@@ -7,14 +7,11 @@
 ; Parameters set by plugin before this macro runs:
 ;   #4900 = incoming tool number
 ;   #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
-;
-; Geometry parameters — set once by G65 P200 in your startup macro:
-;   #4920-#4922  Position 1: Safe XYZ  (used for Z clearance before XY move)
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
 ; G30 (second home position) is used as the manual tool change position.
 ; Set it once via G10 L2 P30 or the grblHAL coordinate system settings.
-G53 G0 Z#4922
+G53 G0 Z0
 G30
 
 ; ── Notify operator ───────────────────────────────────────────────────────────

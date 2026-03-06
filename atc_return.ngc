@@ -30,6 +30,8 @@ G53 G0 X#4920 Y#4921
 ; Position the carousel to pocket #4902 here.
 ; Example: G0 A[#4902 * 18.0]   (if A axis drives the carousel)
 ;          or issue an M-code to the carousel MCU
+  G65 P7 S3 F16 R1 A1#4902
+  G65 P201
 
 ; ── Approach pocket (P2) ─────────────────────────────────────────────────────
 G53 G1 X#4923 Y#4924 F#4932
