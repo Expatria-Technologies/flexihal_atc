@@ -966,7 +966,7 @@ static void onReportOptions (bool newopt)
         report_plugin("Tool table", "0.04");
 }
 
-// $TTREG=Tn [;name] — Register a tool in the tooltable at P0.
+// $TTREG=Tn [,name] — Register a tool in the tooltable at P0.
 // ---------------------------------------------------------------------------
 static status_code_t register_tool (sys_state_t state, char *args)
 {
@@ -976,7 +976,7 @@ static status_code_t register_tool (sys_state_t state, char *args)
     }
 
     if(!args || !*args || (*args != 'T' && *args != 't')) {
-        report_message("TTREG: usage is $TTREG=Tn [;name]", Message_Warning);
+        report_message("TTREG: usage is $TTREG=Tn [,name]", Message_Warning);
         return Status_BadNumberFormat;
     }
 
@@ -990,7 +990,7 @@ static status_code_t register_tool (sys_state_t state, char *args)
         return parse_status;
     }
     while(args[cc] == ' ' || args[cc] == '\t') cc++;
-    if(args[cc] == ';')
+    if(args[cc] == ',')
         name = &args[cc + 1];
 
     carousel_op_result_t result = tooltable_register_tool((tool_id_t)tool_id, name);
@@ -1093,7 +1093,7 @@ void tooltable_init (void)
         { "TTLOAD",  load_tools,     {}, { .str = "(re)load tool table from SD card" } },
         { "TTLIST",  list_tools,     {}, { .str = "List all tools in the tool table" } },
         { "TTINDEX", list_index,     {}, { .str = "Print the RAM index (debug)" } },
-        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn [;name]" } },
+        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn [,name]" } },
         { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL=Tn" } }
     };
 

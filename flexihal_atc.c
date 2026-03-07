@@ -340,7 +340,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             return parse_status;
         }
         while(args[cc] == ' ' || args[cc] == '\t') cc++;
-        if(args[cc] == ';')
+        if(args[cc] == ',')
             name = &args[cc + 1];
     }
 
