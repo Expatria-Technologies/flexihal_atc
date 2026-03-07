@@ -939,17 +939,17 @@ static void atc_poll (void *data)
         if (zero_count >= DEBOUNCE_THRESHOLD) {
             latch = 1;
             grbl.enqueue_gcode("$DRBO");
-            zero_count = 0;
+            zero_count = 0;  // Reset counter after activation
         }
     }
     // Check for transition to inactive state
     else if (((prev_val == 1) && (val == 1) && (latch == 1)) || 
-             (zero_count >= ZERO_THRESHOLD)) {
-        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {
+             (zero_count >= ZERO_THRESHOLD)) {  // Added condition for 10 consecutive zeros
+        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {  // Modified condition
             latch = 0;
             grbl.enqueue_gcode("$DRBC");
-            one_count = 0;
-            zero_count = 0;
+            one_count = 0;  // Reset counter after activation
+            zero_count = 0;  // Also reset zero counter
         }
     }
     // Reset counters if state is inconsistent
@@ -958,6 +958,9 @@ static void atc_poll (void *data)
         one_count = 0;
     }
 
+    //if the spindle is running and the drawbar or tool is sensed open/not present raise an error and stop.
+
+    //polling_ms = ms;
     task_delete(atc_poll, NULL);
     task_add_delayed(atc_poll, NULL, 100); 
 }
@@ -1126,6 +1129,7 @@ static void atc_settings_save (void)
 
 static void atc_settings_load (void)
 {
+     
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&atc, nvs_address, sizeof(atc_settings_t), true) != NVS_TransferResult_OK)
         atc_settings_restore();
 
@@ -1182,8 +1186,11 @@ static void atc_settings_load (void)
 
     grbl.tool_table.n_tools = atc.number_of_pockets;
     
-    on_tool_change = hal.tool.change;
-    hal.tool.change = tool_change;
+    
+    if(hal.tool.change != tool_change){
+        on_tool_change = hal.tool.change;
+        hal.tool.change = tool_change;
+    }
 #endif
 }
 
