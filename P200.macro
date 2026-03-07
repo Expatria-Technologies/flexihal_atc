@@ -46,24 +46,24 @@
 ;
 
 ; ── Position 1: Safe ──────────────────────────────────────────────────────────
-#4920 = 0.0         ; X (machine coords)
-#4921 = 200.0       ; Y
-#4922 = 0.0         ; Z — typically Z home
+#4920 = -80.71       ; X (machine coords)
+#4921 = 2.000        ; Y
+#4922 = 0.0          ; Z — typically Z home
 
 ; ── Position 2: Approach ──────────────────────────────────────────────────────
-#4923 = 50.0        ; X (machine coords)
-#4924 = 200.0       ; Y
-#4925 = -10.0       ; Z
+#4923 = -80.71        ; X (machine coords) beside pocket
+#4924 = 2.000         ; Y
+#4925 = -137.81       ; Z
 
 ; ── Position 3: Engage ────────────────────────────────────────────────────────
-#4926 = 50.0        ; X (machine coords)
-#4927 = 200.0       ; Y
-#4928 = -45.0       ; Z — tool fully seated
+#4926 = -20.71        ; X (machine coords)
+#4927 =  2.000        ; Y
+#4928 = -137.81       ; Z - tool fully seated
 
 ; ── Position 4: Exit ──────────────────────────────────────────────────────────
-#4929 = 50.0        ; X (machine coords)
-#4930 = 200.0       ; Y
-#4931 = -10.0       ; Z
+#4929 = -20.71        ; X (machine coords)
+#4930 = 2.0000        ; Y
+#4931 = 0.00000       ; Z - spindle fully clear
 
 ; ── Feed rate ─────────────────────────────────────────────────────────────────
 #4932 = 500.0       ; mm/min — all carousel positioning moves

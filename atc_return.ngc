@@ -23,6 +23,7 @@
 ; Unload sequence: P1 → P2 → P3 [open drawbar] → P4
 
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
+G65P201
 G53 G0 Z#4922
 G53 G0 X#4920 Y#4921
 

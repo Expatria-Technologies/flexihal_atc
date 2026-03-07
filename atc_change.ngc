@@ -22,6 +22,7 @@
 ; Load sequence:    P4 → P3 [close drawbar] → P2 → P1
 
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
+G65P201
 G53 G0 Z#4922
 G53 G0 X#4920 Y#4921
 
