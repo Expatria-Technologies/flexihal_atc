@@ -686,7 +686,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
     // If data is NULL or the tool is unknown (pocket0 fallback: tool_id==0
     // but we requested a non-zero tool), fall back to manual tool change.
     if(!incoming_entry || !incoming_entry->data ||
-       (incoming_entry->data->tool_id != (tool_id_t)parser_state->tool_pending))
+       (incoming_entry->data->tool_id == 0 && parser_state->tool_pending != 0))
         return on_tool_change ? on_tool_change(parser_state) : Status_OK;
 
     tool_data_t *incoming = incoming_entry->data;
@@ -1129,7 +1129,6 @@ static void atc_settings_save (void)
 
 static void atc_settings_load (void)
 {
-     
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&atc, nvs_address, sizeof(atc_settings_t), true) != NVS_TransferResult_OK)
         atc_settings_restore();
 
