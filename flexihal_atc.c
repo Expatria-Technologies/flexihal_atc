@@ -910,63 +910,56 @@ sys_commands_t *atc_get_commands()
     return &atc_commands;
 }
 
-// Poll the user input button and drive the drawbar directly.
-//
-// The button is treated as a held input: drawbar opens when the button is
-// pressed (held) and closes when it is released.  Debouncing is done by
-// requiring DEBOUNCE_TICKS consecutive consistent readings before acting.
-//
-// drawbar_open() and drawbar_close() are called directly rather than via
-// grbl.enqueue_gcode() so they work in STATE_TOOL_CHANGE as well as
-// STATE_IDLE.
 static void atc_poll (void *data)
 {
-    #define POLL_INTERVAL_MS 100
-
-    static uint8_t debounce_count = 0;
-    static uint8_t last_stable    = 0;  // last debounced button state
-    static uint8_t last_raw       = 0;  // last raw reading
-
-    if(!atc.flags.user_input_active) {
-        task_delete(atc_poll, NULL);
-        task_add_delayed(atc_poll, NULL, POLL_INTERVAL_MS);
-        return;
-    }
-
-    // Derive required stable-tick count from the drawbar delay setting.
-    // Minimum 1 so there is always at least one confirmation reading.
-    uint8_t debounce_ticks = (uint8_t)(atc.drawbar_delay / POLL_INTERVAL_MS);
-    if(debounce_ticks < 1) debounce_ticks = 1;
+    #define DEBOUNCE_THRESHOLD 3
+    #define ZERO_THRESHOLD 10
+    
+    static uint8_t val = 0;
+    static uint8_t prev_val = 99;
+    static uint8_t latch = 0;
+    static int zero_count = 0;
+    static int one_count = 0;    
 
     read_atc_ports();
-    uint8_t raw = atc_status.userinput_status;
 
-    if(raw != last_raw) {
-        // Input changed — restart debounce counter
-        debounce_count = 0;
-        last_raw = raw;
-    } else if(debounce_count < debounce_ticks) {
-        debounce_count++;
+    prev_val = val;
+    val = atc_status.userinput_status;
+
+    if (val == 0) {
+        zero_count++;
+        one_count = 0;
+    } else {
+        one_count++;
+        zero_count = 0;
     }
 
-    if(debounce_count >= debounce_ticks && raw != last_stable) {
-        // Stable transition detected
-        last_stable = raw;
-
-        sys_state_t state = state_get();
-        if(state == STATE_IDLE || state == STATE_TOOL_CHANGE) {
-            if(!raw) {
-                // Button pressed (active low) — open drawbar
-                drawbar_open(state, NULL);
-            } else {
-                // Button released — close drawbar
-                drawbar_close(state, NULL);
-            }
+    // Check for transition to active state
+    if ((prev_val == 0) && (val == 0) && (latch == 0)) {
+        if (zero_count >= DEBOUNCE_THRESHOLD) {
+            latch = 1;
+            grbl.enqueue_gcode("$DRBO");
+            zero_count = 0;
         }
+    }
+    // Check for transition to inactive state
+    else if (((prev_val == 1) && (val == 1) && (latch == 1)) || 
+             (zero_count >= ZERO_THRESHOLD)) {
+        if (one_count >= 1 || zero_count >= ZERO_THRESHOLD) {
+            latch = 0;
+            grbl.enqueue_gcode("$DRBC");
+            one_count = 0;
+            zero_count = 0;
+        }
+    }
+    // Reset counters if state is inconsistent
+    else {
+        zero_count = 0;
+        one_count = 0;
     }
 
     task_delete(atc_poll, NULL);
-    task_add_delayed(atc_poll, NULL, POLL_INTERVAL_MS);
+    task_add_delayed(atc_poll, NULL, 100); 
 }
 
 static void read_atc_ports(void)
