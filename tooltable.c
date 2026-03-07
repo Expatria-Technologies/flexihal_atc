@@ -476,17 +476,7 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         return &tool;
     }
 
-    // Not in index — P0 tool or unknown.
-    // If VFS not yet mounted or table is empty, return pocket0 (zeroed, tool_id=0)
-    // so callers never receive stale or garbage data.
-    if(!fs_available || n_tools == 0) {
-        tool.data   = &pocket0.tool;
-        tool.pocket = pocket0.pocket_id;
-        tool.name   = pocket0.name;
-        return &tool;
-    }
-
-    // Scan file for P0 tools
+    // Not in index — P0 tool or unknown. Scan file.
     vfs_file_t *file = vfs_open(filename, "r");
     if(!file) {
         tool.data   = &pocket0.tool;
@@ -511,7 +501,9 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
     }
     vfs_close(file);
 
-    // Not found in file — return pocket0 rather than NULL data
+    // Not found in file — return pocket0 so grblHAL never sees NULL data
+    // on an empty table. Callers that need to distinguish "not in carousel"
+    // should check pocket_id, not data.
     if(!tool.data) {
         tool.data   = &pocket0.tool;
         tool.pocket = pocket0.pocket_id;
@@ -592,36 +584,20 @@ static bool setTool (tool_data_t *tool_data)
 // ---------------------------------------------------------------------------
 static bool clearTools (void)
 {
-    vfs_file_t *src = vfs_open(filename, "r");
-    if(!src)
-        return false;
-
-    vfs_file_t *dst = vfs_open(filename_tmp, "w");
-    if(!dst) {
-        vfs_close(src);
-        return false;
+    // Zero offsets in the RAM index. If the table hasn't been loaded yet,
+    // also reset pocket and tool IDs — matching the == 1 implementation.
+    if(!fs_available || n_tools == 0) {
+        // Nothing loaded yet — just reset pocket0
+        pocket0.tool.radius = 0.0f;
+        memset(&pocket0.tool.offset, 0, sizeof(coord_data_t));
+        return true;
     }
 
-    char line[300];
-    tool_pocket_t entry;
-
-    while(read_line(src, line, sizeof(line))) {
-        if(!parse_line(line, &entry))
-            continue;
-        memset(&entry.tool.offset, 0, sizeof(coord_data_t));
-        entry.tool.radius = 0.0f;
-        write_pocket_line(dst, &entry);
+    for(uint16_t i = 0; i < n_tools; i++) {
+        tt_index[i].tool.radius = 0.0f;
+        memset(&tt_index[i].tool.offset, 0, sizeof(coord_data_t));
     }
 
-    vfs_close(src);
-    vfs_close(dst);
-
-    if(vfs_rename(filename_tmp, filename) != 0) {
-        vfs_unlink(filename_tmp);
-        return false;
-    }
-
-    rebuild_index();
     return true;
 }
 
@@ -1120,16 +1096,13 @@ void tooltable_init (void)
     memset(&pocket0, 0, sizeof(tool_pocket_t));
     pocket0.tool.tool_id = 0;
     pocket0.pocket_id    = -1;
-
+    
     grbl.tool_table.n_tools         = 1;
     grbl.tool_table.get_tool        = getTool;
     grbl.tool_table.reload           = reload_tools;
     grbl.tool_table.set_tool        = setTool;
     grbl.tool_table.get_tool_by_idx = getToolByIdx;
     grbl.tool_table.clear           = clearTools;
-
-
-    clearTools();
 
     system_register_commands(&tt_commands);
 

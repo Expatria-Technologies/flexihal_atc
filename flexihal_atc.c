@@ -682,7 +682,11 @@ static status_code_t tool_change (parser_state_t *parser_state)
 #if TOOLTABLE_ENABLE == 2
     // tool_pending is the tool ID requested by the Tn word before M6
     tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(parser_state->tool_pending);
-    if(!incoming_entry || !incoming_entry->data)
+
+    // If data is NULL or the tool is unknown (pocket0 fallback: tool_id==0
+    // but we requested a non-zero tool), fall back to manual tool change.
+    if(!incoming_entry || !incoming_entry->data ||
+       (incoming_entry->data->tool_id != (tool_id_t)parser_state->tool_pending))
         return on_tool_change ? on_tool_change(parser_state) : Status_OK;
 
     tool_data_t *incoming = incoming_entry->data;
