@@ -414,9 +414,9 @@ static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_override
     vfs_close(src);
     vfs_close(dst);
 
-    // Atomically replace original with temp file
+    // FAT filesystems cannot rename over an existing file — delete first.
+    vfs_unlink(filename);
     if(vfs_rename(filename_tmp, filename) != 0) {
-        // rename failed — try to clean up temp file
         vfs_unlink(filename_tmp);
         return false;
     }
@@ -431,12 +431,35 @@ static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_override
 // ---------------------------------------------------------------------------
 static bool append_tool (const tool_pocket_t *p)
 {
-    vfs_file_t *file = vfs_open(filename, "a");
-    if(!file)
+    vfs_file_t *src = vfs_open(filename, "r");
+    if(!src)
         return false;
 
-    write_pocket_line(file, p);
-    vfs_close(file);
+    vfs_file_t *dst = vfs_open(filename_tmp, "w");
+    if(!dst) {
+        vfs_close(src);
+        return false;
+    }
+
+    char line[300];
+    tool_pocket_t entry;
+
+    while(read_line(src, line, sizeof(line))) {
+        if(!parse_line(line, &entry))
+            continue;
+        write_pocket_line(dst, &entry);
+    }
+
+    write_pocket_line(dst, p);
+
+    vfs_close(src);
+    vfs_close(dst);
+
+    vfs_unlink(filename);
+    if(vfs_rename(filename_tmp, filename) != 0) {
+        vfs_unlink(filename_tmp);
+        return false;
+    }
 
     index_upsert_full(p);
     grbl.tool_table.n_tools = n_tools;
@@ -569,6 +592,7 @@ static bool setTool (tool_data_t *tool_data)
     vfs_close(src);
     vfs_close(dst);
 
+    vfs_unlink(filename);
     if(vfs_rename(filename_tmp, filename) != 0) {
         vfs_unlink(filename_tmp);
         return false;
@@ -942,7 +966,7 @@ static void onReportOptions (bool newopt)
         report_plugin("Tool table", "0.04");
 }
 
-// $TTREG Tn [;name] — Register a tool in the tooltable at P0.
+// $TTREG=Tn [;name] — Register a tool in the tooltable at P0.
 // ---------------------------------------------------------------------------
 static status_code_t register_tool (sys_state_t state, char *args)
 {
@@ -952,7 +976,7 @@ static status_code_t register_tool (sys_state_t state, char *args)
     }
 
     if(!args || !*args || (*args != 'T' && *args != 't')) {
-        report_message("TTREG: usage is $TTREG Tn [;name]", Message_Warning);
+        report_message("TTREG: usage is $TTREG=Tn [;name]", Message_Warning);
         return Status_BadNumberFormat;
     }
 
@@ -1005,7 +1029,7 @@ static status_code_t register_tool (sys_state_t state, char *args)
     }
 }
 
-// $TTDEL Tn — Delete a P0 tool entry from the tooltable entirely.
+// $TTDEL=Tn — Delete a P0 tool entry from the tooltable entirely.
 // ---------------------------------------------------------------------------
 static status_code_t delete_tool (sys_state_t state, char *args)
 {
@@ -1015,7 +1039,7 @@ static status_code_t delete_tool (sys_state_t state, char *args)
     }
 
     if(!args || !*args || (*args != 'T' && *args != 't')) {
-        report_message("TTDEL: usage is $TTDEL Tn", Message_Warning);
+        report_message("TTDEL: usage is $TTDEL=Tn", Message_Warning);
         return Status_BadNumberFormat;
     }
 
@@ -1069,8 +1093,8 @@ void tooltable_init (void)
         { "TTLOAD",  load_tools,     {}, { .str = "(re)load tool table from SD card" } },
         { "TTLIST",  list_tools,     {}, { .str = "List all tools in the tool table" } },
         { "TTINDEX", list_index,     {}, { .str = "Print the RAM index (debug)" } },
-        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG Tn [;name]" } },
-        { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL Tn" } }
+        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn [;name]" } },
+        { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL=Tn" } }
     };
 
     static sys_commands_t tt_commands = {

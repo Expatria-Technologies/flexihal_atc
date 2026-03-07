@@ -118,7 +118,7 @@ static nvs_address_t nvs_address;
 static atc_settings_t atc;
 static atc_status_flags_t atc_status;
 
-static tool_data_t current_tool = {0}, *next_tool = NULL;
+static tool_data_t current_tool = {}, *next_tool = NULL;
 
 static on_spindle_select_ptr on_spindle_select;
 static on_probe_toolsetter_ptr on_probe_fixture;
@@ -127,6 +127,7 @@ static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
 #if TOOLTABLE_ENABLE == 2
 static tool_change_ptr on_tool_change = NULL;
+static tool_select_ptr tool_select = NULL;
 static parser_state_t *atc_parser_state = NULL; // saved from tool_change(), used by $TCMEASURE
 #endif
 
@@ -460,7 +461,7 @@ static status_code_t carousel_return (sys_state_t state, char *args)
     // Clear spindle state to T0
     memset(gc_state.tool, 0, sizeof(tool_data_t));
     gc_state.tool_pending = 0;
-    memset(&current_tool, 0, sizeof(tool_data_t));
+    current_tool.tool_id = 0;
     report_add_realtime(Report_Tool);
 
     char msg[48];
@@ -654,6 +655,22 @@ static status_code_t atc_macro_start (const char *filename)
     return Status_OK;
 }
 
+#if TOOLTABLE_ENABLE == 2
+
+// Set next and/or current tool. Called by gcode.c on on a Tn or M61 command (via HAL).
+FLASHMEM static void onToolSelect (tool_data_t *tool, bool next)
+{
+    next_tool = tool;
+
+    if(!next)
+        memcpy(&current_tool, tool, sizeof(tool_data_t));
+
+    if(tool_select)
+        tool_select(tool, next);
+}
+
+#endif
+
 // ---------------------------------------------------------------------------
 // tool_change() — hal.tool.change handler, called by grblHAL when M6 is parsed
 //
@@ -672,7 +689,12 @@ static status_code_t atc_macro_start (const char *filename)
 static status_code_t tool_change (parser_state_t *parser_state)
 {
     atc_parser_state = parser_state; // save for use by $TCMEASURE
-    tool_data_t *current = parser_state->tool;
+
+    if(next_tool == NULL)
+        return Status_GCodeToolError;
+
+    if(current_tool.tool_id == next_tool->tool_id)
+        return Status_OK;
 
     // Stop spindle and coolant before any tool change path.
     // State is read from gc_state.modal for restore at the end.
@@ -681,7 +703,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
 
 #if TOOLTABLE_ENABLE == 2
     // tool_pending is the tool ID requested by the Tn word before M6
-    tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(parser_state->tool_pending);
+    tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(next_tool->tool_id);
 
     // If data is NULL or the tool is unknown (pocket0 fallback: tool_id==0
     // but we requested a non-zero tool), fall back to manual tool change.
@@ -689,22 +711,9 @@ static status_code_t tool_change (parser_state_t *parser_state)
        (incoming_entry->data->tool_id == 0 && parser_state->tool_pending != 0))
         return on_tool_change ? on_tool_change(parser_state) : Status_OK;
 
-    tool_data_t *incoming = incoming_entry->data;
-
-    if(incoming->tool_id == current->tool_id) {
-        // Restore spindle/coolant even if no change needed
-        coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
-        spindle_t *spindle = gc_spindle_get(-1);
-        spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
-        return Status_OK;
-    }
-
-    next_tool = incoming;
-    memcpy(&current_tool, current, sizeof(tool_data_t));
-
     // entry->pocket holds the carousel pocket, or -1 if not in carousel
     pocket_id_t incoming_pocket = (pocket_id_t)incoming_entry->pocket;
-    pocket_id_t outgoing_pocket = get_carousel_pocket(current->tool_id);
+    pocket_id_t outgoing_pocket = get_carousel_pocket(current_tool.tool_id);
 
     // Tell tooltable.c about the outgoing tool so onToolChanged() can
     // return it to the correct carousel pocket on completion.
@@ -737,7 +746,7 @@ static status_code_t tool_change (parser_state_t *parser_state)
         //   #4900 = incoming tool number
         //   #4901 = incoming carousel pocket
         //   #4902 = outgoing carousel pocket (0 if outgoing was hand-loaded)
-        ngc_param_set(4900, (float)incoming->tool_id);
+        ngc_param_set(4900, (float)next_tool->tool_id);
         ngc_param_set(4901, (float)incoming_pocket);
         ngc_param_set(4902, (float)(outgoing_pocket >= 1 ? outgoing_pocket : 0));
         status = atc_macro_start("/linuxcnc/atc_change.ngc");
@@ -793,7 +802,6 @@ static status_code_t tool_change (parser_state_t *parser_state)
 #else
     // No tooltable — always fall back to a simple pause for manual swap
     next_tool = NULL;
-    memcpy(&current_tool, current, sizeof(tool_data_t));
     parser_state->tool_change = true;
     system_set_exec_state_flag(EXEC_TOOL_CHANGE);
     protocol_execute_realtime();
@@ -1186,10 +1194,13 @@ static void atc_settings_load (void)
     grbl.tool_table.n_tools = atc.number_of_pockets;
     
     
-    if(hal.tool.change != tool_change){
+    if(hal.tool.change != tool_change) {
         on_tool_change = hal.tool.change;
         hal.tool.change = tool_change;
     }
+
+    tool_select = hal.tool.select;
+    hal.tool.select = onToolSelect;
 #endif
 }
 
@@ -1210,25 +1221,7 @@ static setting_details_t setting_details = {
 static void reset (void)
 {
     FLEXIHAL_DEBUG_PRINT("Reset.");
-#if TOOLTABLE_ENABLE == 2
-    if(next_tool) {
-        if(current_tool.tool_id != next_tool->tool_id) {
-            if(grbl.tool_table.n_tools)
-                memcpy(gc_state.tool, &current_tool, sizeof(tool_data_t));
-            else
-                memcpy(next_tool, &current_tool, sizeof(tool_data_t));
-            report_add_realtime(Report_Tool);
-        }
-        char tool_msg[20];
-        sprintf(tool_msg, "Current tool: %lu", current_tool.tool_id);
-        FLEXIHAL_DEBUG_PRINT(tool_msg);
-        sprintf(tool_msg, "Next tool: %lu", next_tool->tool_id);
-        FLEXIHAL_DEBUG_PRINT(tool_msg);
-
-        gc_state.tool_pending = gc_state.tool->tool_id;
-        next_tool = NULL;
-    }
-#endif
+    next_tool = NULL;
     driver_reset();
 }
 
