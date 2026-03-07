@@ -1,28 +1,49 @@
-; atc_return.ngc - Return the current tool to its carousel pocket
+; atc_return.ngc — Return current spindle tool to its carousel pocket
 ;
-; Called by flexihal_atc.c tool_change() when the requested tool is NOT
-; in the carousel but the outgoing tool IS.  Parameter set by plugin:
+; Called by flexihal_atc.c in three situations:
+;   1. tool_change() — outgoing tool is in the carousel, incoming is hand-loaded
+;   2. $TCADD        — deposit a new tool into its assigned pocket
+;   3. $TCRETURN     — return current spindle tool and clear spindle to T0
 ;
-;   #4902 = outgoing carousel pocket number
+; Parameter set by plugin before this macro runs:
 ;
-; atc_pause.ngc runs immediately after to handle the manual swap.
-; No $TCMEASURE here - that is handled by atc_pause.ngc.
+;   #4902 = carousel pocket number to return to
 ;
-; See atc_change.ngc for geometry parameter definitions (#4910-#4917).
+; Geometry parameters — set once by G65 P200 in your startup macro:
+;
+;   #4920-#4922  Position 1: Safe XYZ
+;   #4923-#4925  Position 2: Approach XYZ
+;   #4926-#4928  Position 3: Engage XYZ
+;   #4929-#4931  Position 4: Exit XYZ
+;   #4932        Feed rate for all carousel positioning moves (mm/min)
+;
+; Pocket positioning is handled externally (dedicated axis or separate MCU).
+; Add the appropriate motion or M-code in the marked section below.
+;
+; Unload sequence: P1 → P2 → P3 [open drawbar] → P4
 
-; ── Calculate return pocket XY ───────────────────────────────────────────────
-#100 = [#4910 + [#4902 - 1] * #4912]   ; pocket X
-#101 = #4911                             ; pocket Y
+; ── Move to safe position (P1) ───────────────────────────────────────────────
+G65P201
+G53 G0 Z#4922
+G53 G0 X#4920 Y#4921
 
-; ── Retract to safe Z ────────────────────────────────────────────────────────
-G53 G0 Z0
+; ── [CAROUSEL POSITIONING] ───────────────────────────────────────────────────
+; Position the carousel to pocket #4902 here.
+; Example: G0 A[#4902 * 18.0]   (if A axis drives the carousel)
+;          or issue an M-code to the carousel MCU
+  G65 P7 S3 F16 R1 A1#4902
+  G65 P201
 
-; ── Move to pocket and release tool ──────────────────────────────────────────
-G53 G0 X#100 Y#101
-G53 G0 Z#4913
-G53 G1 Z#4914 F#4915
+; ── Approach pocket (P2) ─────────────────────────────────────────────────────
+G53 G1 X#4923 Y#4924 F#4932
+G53 G1 Z#4925 F#4932
+
+; ── Engage pocket (P3) — deposit tool, open drawbar ──────────────────────────
+G53 G1 X#4926 Y#4927 Z#4928 F#4932
 $DRBO
 G4 P0.5
-G53 G0 Z0
+
+; ── Exit pocket (P4) ─────────────────────────────────────────────────────────
+G53 G1 X#4929 Y#4930 Z#4931 F#4932
 
 M2

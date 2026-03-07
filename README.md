@@ -65,19 +65,20 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 ## NGC Macro Files
 
-The following macro files must be present on the filesystem at `/linuxcnc/` when `TOOLTABLE_ENABLE=2`:
+The following macro files must be present on the filesystem when `TOOLTABLE_ENABLE=2`:
 
-| File | Purpose |
-|------|---------|
-| `atc_change.ngc` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then calls `$TCMEASURE` to measure |
-| `atc_return.ngc` | Returns current tool to its carousel pocket (used when incoming tool is not in carousel) |
-| `atc_measure.ngc` | Tool length measurement — cancels active TLO, probes against G59.3 toolsetter, stores gauge length via `G10 L11`, activates offset via `G43`. Reads feed rates and probing distance from `$342`–`$345` via `PRM[]` expressions |
+| File | Location | Purpose |
+|------|----------|---------|
+| `atc_change.ngc` | `/linuxcnc/` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then calls `$TCMEASURE` to measure |
+| `atc_return.ngc` | `/linuxcnc/` | Returns current tool to its carousel pocket (used when incoming tool is not in carousel, and by `$TCADD`/`$TCRETURN`) |
+| `atc_measure.ngc` | `/linuxcnc/` | Tool length measurement — cancels active TLO, probes against G59.3 toolsetter, stores gauge length via `G10 L11`, activates offset via `G43`. Reads feed rates and probing distance from `$342`–`$345` via `PRM[]` |
+| `P200.macro` | SD card macro path | Geometry configuration — sets `#4920`–`#4932`. Called via `G65 P200` from startup block |
 
 The following file is **optional**:
 
-| File | Purpose |
-|------|---------|
-| `atc_pause.ngc` | Operator notification hook — runs after the machine arrives at the change position, before the `STATE_TOOL_CHANGE` pause. Use for lights, buzzers, or display messages. If absent, it is silently skipped. |
+| File | Location | Purpose |
+|------|----------|---------|
+| `atc_pause.ngc` | `/linuxcnc/` | Operator notification hook — runs after the machine arrives at the change position, before the `STATE_TOOL_CHANGE` pause. Use for lights, buzzers, or display messages. If absent, it is silently skipped. |
 
 If any required macro file is missing, M6 will report a warning and abort rather than leaving the machine in an undefined state.
 
@@ -105,34 +106,41 @@ The plugin sets the following numbered NGC parameters before starting a macro:
 
 ### Machine Geometry Parameters
 
-The following numbered parameters must be set to match your machine before any tool change runs. The recommended place to set these is a startup macro — see [Running atc_config.macro](#running-atc_configmacro).
+Tool change motion follows the **four-position model**, matching the OpenPnP "Four Positions" changer style. Each deposit or pickup moves through four explicit waypoints. Unload executes the same positions in reverse. Parameters are set once by running `G65 P200` from a startup macro.
 
 | Parameter | Description |
 |-----------|-------------|
-| `#4910` | X position of carousel pocket 1 |
-| `#4911` | Y position of all carousel pockets (fixed for linear carousel) |
-| `#4912` | Pocket pitch — X spacing between pockets |
-| `#4913` | Z start height — just above pocket (machine coordinates) |
-| `#4914` | Z engage height — tool fully seated in pocket (machine coordinates) |
-| `#4915` | Z engagement feed rate |
+| `#4920` | Position 1 (Safe) X — clearance position (machine coords) |
+| `#4921` | Position 1 (Safe) Y |
+| `#4922` | Position 1 (Safe) Z — typically Z0 |
+| `#4923` | Position 2 (Approach) X |
+| `#4924` | Position 2 (Approach) Y |
+| `#4925` | Position 2 (Approach) Z |
+| `#4926` | Position 3 (Engage) X |
+| `#4927` | Position 3 (Engage) Y |
+| `#4928` | Position 3 (Engage) Z — tool fully seated in pocket |
+| `#4929` | Position 4 (Exit) X |
+| `#4930` | Position 4 (Exit) Y |
+| `#4931` | Position 4 (Exit) Z — spindle clear of pocket |
+| `#4932` | Feed rate for all carousel positioning moves (mm/min) |
 
-The manual tool change position is configured via **G30** (standard grblHAL mechanism) rather than NGC parameters. Set G30 with `G30.1` after jogging to your preferred change position. The plugin moves to G30 before pausing if `tool_change_at_g30` is enabled in grblHAL settings.
+Pocket positioning (rotating the carousel to the correct pocket) is handled externally — either by a dedicated axis (A/B) or a separate MCU. The pocket number is available in the macro as `#4901` (incoming) and `#4902` (outgoing). Add the appropriate motion or M-code in the marked sections of `atc_change.ngc` and `atc_return.ngc`.
 
-### Running atc_config.macro
+### Running P200.macro
 
-grblHAL does not support `O<path> call` syntax for running files by path. Instead, the config file must be placed on the SD card named as `P<n>.macro` where `<n>` is an integer ≥ 100 of your choosing (e.g. `P200.macro`), then called from the MDI or a startup block:
+The geometry configuration file is named `P200.macro` so it can be called directly by grblHAL's `G65` mechanism. Copy it to the SD card and call it from the MDI or assign it to a startup block:
 
 ```gcode
 G65 P200
 ```
 
-To run it automatically on every boot, assign it to a startup block:
+To run it automatically on every boot:
 
 ```
 $N0=G65P200
 ```
 
-This ensures your geometry parameters are always set after a reset or power cycle.
+This ensures geometry parameters are always set after a reset or power cycle. Edit the parameter values in `P200.macro` to match your machine before first use.
 
 ## Tool Change Behaviour (M6)
 

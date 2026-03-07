@@ -9,7 +9,6 @@
 ;   - Spindle stopped, coolant off
 ;   - Tool clamped in spindle
 ;   - NGC expression support enabled in config (required for PRM[] and #5xxx)
-;   - G65 P5 toolsetter-select macro supported (grblHAL build >= 20250514)
 ;
 ; SETTINGS READ VIA PRM[]   (no caller parameters required)
 ;   $342  probing distance   mm        max downward travel toward toolsetter
@@ -82,9 +81,6 @@ o50 if [#<_value> NE 0]
   M2
 o50 endif
 
-; ── 2. Select toolsetter probe ───────────────────────────────────────────────
-G65 P5 Q1
-
 ; ── 3. Cancel active TLO ─────────────────────────────────────────────────────
 ; G49 ensures the probe result (#5063) is a raw machine coordinate.
 ; Without this, a previously active G43 offset would skew the probe target
@@ -141,8 +137,5 @@ G43
 
 ; ── 13. Retract to home Z ────────────────────────────────────────────────────
 G53 G0 Z0
-
-; ── 14. Restore primary probe ────────────────────────────────────────────────
-G65 P5 Q0
 
 M2
