@@ -209,7 +209,10 @@ status_code_t drawbar_open (sys_state_t state, char *args)
             hal.port.digital_out(active_ports.air_seal, 0);//ensure air seal is off
         atc_status.airseal_control=0;
         grbl.enqueue_realtime_command(CMD_STOP);
-        report_message("ATC Malfunction opening drawbar!!", Message_Warning);
+        if((atc_status.drawbar_status == 1) && (atc.flags.drawbar_status_active))
+            report_message("ATC Malfunction opening drawbar: drawbar sensor still reads closed", Message_Warning);
+        if((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))
+            report_message("ATC Malfunction opening drawbar: tool present sensor reads no tool", Message_Warning);
         return 0; 
     }    
 
@@ -270,7 +273,10 @@ status_code_t drawbar_close (sys_state_t state, char *args)
             hal.port.digital_out(active_ports.air_seal, 0);//ensure air seal is off
         atc_status.airseal_control=0;
         grbl.enqueue_realtime_command(CMD_STOP);
-        report_message("ATC Malfunction closing drawbar!!", Message_Warning);
+        if((atc_status.drawbar_status == 0) && (atc.flags.drawbar_status_active))
+            report_message("ATC Malfunction closing drawbar: drawbar sensor still reads open", Message_Warning);
+        if((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))
+            report_message("ATC Malfunction closing drawbar: tool present sensor reads no tool", Message_Warning);
         return 0; 
     }
 
@@ -1004,7 +1010,12 @@ static void onSpindleSetState (spindle_ptrs_t *spindle, spindle_state_t state, f
             hal.port.digital_out(active_ports.air_seal, atc_status.airseal_control);//ensure air seal is off
             
             grbl.enqueue_realtime_command(CMD_STOP);
-            report_message("ATC Malfunction setting spindle state!!", Message_Warning);
+            if((atc_status.drawbar_status == 0) && (atc.flags.drawbar_status_active))
+                report_message("ATC Malfunction: spindle start blocked, drawbar sensor reads open", Message_Warning);
+            if((atc_status.toolpresent_status == 0) && (atc.flags.tool_present_active))
+                report_message("ATC Malfunction: spindle start blocked, tool present sensor reads no tool", Message_Warning);
+            if((atc_status.drawbar_control == 1) && (atc.flags.drawbar_control_active))
+                report_message("ATC Malfunction: spindle start blocked, drawbar is commanded open", Message_Warning);
         }
     }
 

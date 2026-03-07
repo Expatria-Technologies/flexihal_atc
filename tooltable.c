@@ -458,50 +458,46 @@ typedef struct {
 
 static tool_table_entry_t *getTool (tool_id_t tool_id)
 {
-    static tool_table_entry_t  empty  = { .data = NULL };
-    static tool_scan_result_t  scanned = {0};
+    static tool_table_entry_t tool = {0};
+    static tool_scan_result_t scanned = {0};
 
+    tool = (tool_table_entry_t){0};  // reset on every call
     tool_index_entry_t *ie = index_find(tool_id);
 
     if(ie) {
-        // Carousel tool — return stable pointer into index entry
-        static tool_table_entry_t result;
-        result.data   = &ie->tool;
-        result.pocket = ie->pocket_id;
-        result.name   = ie->name;
-        return &result;
+        tool.data   = &ie->tool;
+        tool.pocket = ie->pocket_id;
+        tool.name   = ie->name;
+        return &tool;
     }
 
     // Not in index — P0 tool or unknown. Scan file.
+    tool.data = NULL;
+
     if(!fs_available)
-        return &empty;
+        return &tool;
 
     vfs_file_t *file = vfs_open(filename, "r");
     if(!file)
-        return &empty;
+        return &tool;
 
     char line[300];
     tool_pocket_t entry;
-    bool found = false;
 
     while(read_line(file, line, sizeof(line))) {
         if(parse_line(line, &entry) && entry.tool.tool_id == tool_id) {
-            found = true;
+            memcpy(&scanned.tool, &entry.tool, sizeof(tool_data_t));
+            strncpy(scanned.name, entry.name, sizeof(scanned.name) - 1);
+            scanned.name[sizeof(scanned.name) - 1] = '\0';
+            tool.data   = &scanned.tool;
+            tool.pocket = entry.pocket_id;
+            tool.name   = scanned.name;
             break;
         }
     }
     vfs_close(file);
 
-    if(!found)
-        return &empty;
-
-    memcpy(&scanned.tool, &entry.tool, sizeof(tool_data_t));
-    strncpy(scanned.name, entry.name, sizeof(scanned.name) - 1);
-    scanned.name[sizeof(scanned.name) - 1] = '\0';
-    scanned.entry.data   = &scanned.tool;
-    scanned.entry.pocket = entry.pocket_id;  // will be -1
-    scanned.entry.name   = scanned.name;
-    return &scanned.entry;
+    return &tool;
 }
 
 // ---------------------------------------------------------------------------
@@ -509,14 +505,17 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
 // ---------------------------------------------------------------------------
 static tool_table_entry_t *getToolByIdx (uint32_t idx)
 {
+    static tool_table_entry_t tool = {0};
+
+    tool.data = NULL;
+
     // idx is a pocket number (1-based). Scan the index for the tool in that pocket.
     for(uint16_t i = 0; i < n_tools; i++) {
         if(tt_index[i].pocket_id == (pocket_id_t)idx)
             return getTool(tt_index[i].tool_id);
     }
 
-    static tool_table_entry_t empty = { .data = NULL };
-    return &empty;
+    return &tool;
 }
 
 // ---------------------------------------------------------------------------
