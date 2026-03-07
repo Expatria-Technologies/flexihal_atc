@@ -66,6 +66,10 @@ static tool_index_entry_t *tt_index   = NULL;   // lightweight RAM index
 static tool_id_t         current_tool = 0;      // tool currently in spindle
 static char              filename[]   = "/linuxcnc/tooltable.tbl";
 
+// Zeroed fallback pocket — always valid, used before FS mounts or on empty table.
+// Mirrors the pocket0 pattern from the TOOLTABLE_ENABLE==1 implementation.
+static tool_pocket_t     pocket0      = {0};
+
 // M6 tool-change state - set by ATC plugin, consumed in onToolChanged().
 // Holds the carousel pocket the outgoing tool came from, or -1 if it was hand-loaded.
 static pocket_id_t       m6_prev_tool_pocket = -1;
@@ -461,7 +465,8 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
     static tool_table_entry_t tool = {0};
     static tool_scan_result_t scanned = {0};
 
-    tool = (tool_table_entry_t){0};  // reset on every call
+    tool = (tool_table_entry_t){0};  // reset on every call — no stale data
+
     tool_index_entry_t *ie = index_find(tool_id);
 
     if(ie) {
@@ -471,15 +476,24 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         return &tool;
     }
 
-    // Not in index — P0 tool or unknown. Scan file.
-    tool.data = NULL;
-
-    if(!fs_available)
+    // Not in index — P0 tool or unknown.
+    // If VFS not yet mounted or table is empty, return pocket0 (zeroed, tool_id=0)
+    // so callers never receive stale or garbage data.
+    if(!fs_available || n_tools == 0) {
+        tool.data   = &pocket0.tool;
+        tool.pocket = pocket0.pocket_id;
+        tool.name   = pocket0.name;
         return &tool;
+    }
 
+    // Scan file for P0 tools
     vfs_file_t *file = vfs_open(filename, "r");
-    if(!file)
+    if(!file) {
+        tool.data   = &pocket0.tool;
+        tool.pocket = pocket0.pocket_id;
+        tool.name   = pocket0.name;
         return &tool;
+    }
 
     char line[300];
     tool_pocket_t entry;
@@ -497,6 +511,13 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
     }
     vfs_close(file);
 
+    // Not found in file — return pocket0 rather than NULL data
+    if(!tool.data) {
+        tool.data   = &pocket0.tool;
+        tool.pocket = pocket0.pocket_id;
+        tool.name   = pocket0.name;
+    }
+
     return &tool;
 }
 
@@ -507,7 +528,7 @@ static tool_table_entry_t *getToolByIdx (uint32_t idx)
 {
     static tool_table_entry_t tool = {0};
 
-    tool.data = NULL;
+    tool = (tool_table_entry_t){0};  // reset on every call
 
     // idx is a pocket number (1-based). Scan the index for the tool in that pocket.
     for(uint16_t i = 0; i < n_tools; i++) {
@@ -515,6 +536,10 @@ static tool_table_entry_t *getToolByIdx (uint32_t idx)
             return getTool(tt_index[i].tool_id);
     }
 
+    // Not found — return pocket0 (zeroed, tool_id=0)
+    tool.data   = &pocket0.tool;
+    tool.pocket = pocket0.pocket_id;
+    tool.name   = pocket0.name;
     return &tool;
 }
 
@@ -1089,12 +1114,22 @@ void tooltable_init (void)
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
+    // Initialise pocket0 as a safe zeroed fallback — tool_id=0, all offsets=0.
+    // This mirrors the TOOLTABLE_ENABLE==1 pattern so getTool/getToolByIdx
+    // always return valid data even before the VFS mounts or if the table is empty.
+    memset(&pocket0, 0, sizeof(tool_pocket_t));
+    pocket0.tool.tool_id = 0;
+    pocket0.pocket_id    = -1;
+
     grbl.tool_table.n_tools         = 1;
     grbl.tool_table.get_tool        = getTool;
     grbl.tool_table.reload           = reload_tools;
     grbl.tool_table.set_tool        = setTool;
     grbl.tool_table.get_tool_by_idx = getToolByIdx;
     grbl.tool_table.clear           = clearTools;
+
+
+    clearTools();
 
     system_register_commands(&tt_commands);
 
