@@ -129,6 +129,14 @@ static on_report_options_ptr on_report_options;
 static tool_change_ptr on_tool_change = NULL;
 static tool_select_ptr tool_select = NULL;
 static parser_state_t *atc_parser_state = NULL; // saved from tool_change(), used by $TCMEASURE
+
+static bool block_cycle_start, probe_toolsetter, change_at_g30;
+static volatile bool execute_posted = false;
+static volatile uint32_t spin_lock = 0;
+
+static control_signals_callback_ptr control_interrupt_callback = NULL;
+static enqueue_realtime_command_ptr enqueue_realtime_command = NULL;
+
 #endif
 
 static uint8_t n_in_ports;
@@ -1060,6 +1068,63 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
     return status;
 }
 
+// Trap cycle start commands and redirect to foreground process
+// by adding the function to be called to the realtime execution queue.
+ISR_CODE static void ISR_FUNC(trap_control_cycle_start)(control_signals_t signals)
+{
+    spin_lock++;
+
+    if(signals.cycle_start) {
+        if(!execute_posted) {
+            if(!block_cycle_start)
+                execute_posted = task_add_immediate(settings.tool_change.mode == ToolChange_SemiAutomatic
+                                                     ? execute_probe
+                                                     : execute_restore, NULL);
+            else if(change_at_g30)
+                execute_posted = task_add_immediate(execute_return_from_g30, NULL);
+            else
+                task_add_immediate(execute_warning, NULL);
+        }
+        signals.cycle_start = Off;
+    } else
+        control_interrupt_callback(signals);
+
+    spin_lock--;
+}
+
+ISR_CODE static bool ISR_FUNC(trap_stream_cycle_start)(uint8_t c)
+{
+    bool drop = false;
+
+    spin_lock++;
+
+    if((drop = (c == CMD_CYCLE_START || c == CMD_CYCLE_START_LEGACY))) {
+        if(!execute_posted) {
+            if(!block_cycle_start)
+                execute_posted = task_add_immediate(settings.tool_change.mode == ToolChange_SemiAutomatic
+                                                     ? execute_probe
+                                                     : execute_restore, NULL);
+            else if(change_at_g30)
+                execute_posted = task_add_immediate(execute_return_from_g30, NULL);
+            else
+                task_add_immediate(execute_warning, NULL);
+        }
+    } else
+        drop = enqueue_realtime_command(c);
+
+    spin_lock--;
+
+    return drop;
+}
+
+// Trap cycle start command and control signal when tool change is acknowledged by sender.
+ISR_CODE static void ISR_FUNC(on_toolchange_ack)(void)
+{
+    control_interrupt_callback = hal.control.interrupt_callback;
+    hal.control.interrupt_callback = trap_control_cycle_start;
+    enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
+
+}
 
 static const setting_detail_t atc_settings[] = {
     { 953, Group_Toolchange, "ATC Drawbar Delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_NonCore, &atc.drawbar_delay, NULL, NULL, },
@@ -1197,6 +1262,7 @@ static void atc_settings_load (void)
     if(hal.tool.change != tool_change) {
         on_tool_change = hal.tool.change;
         hal.tool.change = tool_change;
+        grbl.on_toolchange_ack = on_toolchange_ack;        
     }
 
     tool_select = hal.tool.select;
