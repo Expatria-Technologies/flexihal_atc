@@ -544,15 +544,15 @@ static status_code_t carousel_return (sys_state_t state, char *args)
     }
 
     // Run ATC_MACRO_ID_TCRETURN to physically deposit the tool.
-    // Completion handled in macro_exit() via standalone_return_pending flag
+    // Completion handled in macro_exit() via standalone_op flag
     // State cleanup (T0, reporting) happens there, not here.
     ngc_param_set(4900, (float)tool_id);
     ngc_param_set(4901, (float)pocket);
 
-    standalone_return_pending = true;
+    standalone_op      = STANDALONE_TCRETURN;
     status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
     if(result != Status_Handled) {
-        standalone_return_pending = false;
+        standalone_op      = STANDALONE_NONE;
         report_message("TCRETURN: return motion failed", Message_Warning);
         return result == Status_OK ? Status_FileOpenFailed : result;
     }
@@ -678,6 +678,17 @@ FLASHMEM static void onToolSelect (tool_data_t *tool, bool next)
 
 #endif
 
+static void atc_tc_complete (void)
+{
+    tc_state = TC_IDLE;
+    change_completed();
+    coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
+    spindle_t *spindle = gc_spindle_get(-1);
+    spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
+    if(on_tool_change)
+        on_tool_change(atc_parser_state);
+}
+
 static status_code_t atc_tc_advance (void)
 {
     status_code_t status = Status_Handled;
@@ -693,9 +704,14 @@ static status_code_t atc_tc_advance (void)
                 status = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
             } else {
                 tc_state = TC_HAND_RETURN;
+                execute_posted = false;
+                control_interrupt_callback = hal.control.interrupt_callback;
+                hal.control.interrupt_callback = trap_control_cycle_start;
+                enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
                 status = grbl.on_macro_execute(ATC_MACRO_ID_HANDRETURN, (parameter_words_t){0}, 1);
             }
             if(status != Status_Handled) {
+                change_completed();
                 tc_state = TC_IDLE;
                 tooltable_set_m6_prev(-1);
                 return status == Status_OK ? Status_FileOpenFailed : status;
@@ -704,7 +720,8 @@ static status_code_t atc_tc_advance (void)
 
         // ── TCRETURN or HANDRETURN complete; fetch incoming ───────────────
         case TC_RETURN_OUTGOING:
-        case TC_HAND_RETURN:
+        case TC_HAND_RETURN: {
+            bool trap_installed = (tc_state == TC_HAND_RETURN);
             if(tc_incoming_pocket >= 1) {
                 tc_state = TC_FETCH_INCOMING;
                 ngc_param_set(4900, (float)next_tool->tool_id);
@@ -712,14 +729,22 @@ static status_code_t atc_tc_advance (void)
                 status = grbl.on_macro_execute(ATC_MACRO_ID_TCFETCH, (parameter_words_t){0}, 1);
             } else {
                 tc_state = TC_HAND_FETCH;
+                if(!trap_installed) {
+                    execute_posted = false;
+                    control_interrupt_callback = hal.control.interrupt_callback;
+                    hal.control.interrupt_callback = trap_control_cycle_start;
+                    enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
+                }
                 status = grbl.on_macro_execute(ATC_MACRO_ID_HANDFETCH, (parameter_words_t){0}, 1);
             }
             if(status != Status_Handled) {
+                change_completed();
                 tc_state = TC_IDLE;
                 tooltable_set_m6_prev(-1);
                 return status == Status_OK ? Status_FileOpenFailed : status;
             }
             break;
+        }
 
         // ── TCFETCH complete → no measure needed, sequence done ───────────
         case TC_FETCH_INCOMING:
@@ -728,32 +753,31 @@ static status_code_t atc_tc_advance (void)
 
         // ── HANDFETCH complete (cycle-start trap fired) ───────────────────
         case TC_HAND_FETCH:
-            if(next_tool->tool_id == 0 || next_tool->tool_offset.z != 0.0f) {
+            if(next_tool->tool_id == 0 || next_tool->offset.z != 0.0f) {
                 atc_tc_complete();
             } else {
                 tc_state = TC_MEASURE;
-                grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+                status = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+                if(status != Status_Handled) {
+                    change_completed();
+                    tc_state = TC_IDLE;
+                    tooltable_set_m6_prev(-1);
+                    return status == Status_OK ? Status_FileOpenFailed : status;
+                }
             }
             break;
 
         // ── MEASURE complete → sequence done ─────────────────────────────
         case TC_MEASURE:
-        default:
             atc_tc_complete();
+            break;
+
+        default:
+            tc_state = TC_IDLE;
             break;
     }
 
     return Status_Unhandled;
-}
-
-static void atc_tc_complete (void)
-{
-    tc_state = TC_IDLE;
-    coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
-    spindle_t *spindle = gc_spindle_get(-1);
-    spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
-    if(on_tool_change)
-        on_tool_change(atc_parser_state);
 }
 
 static status_code_t tool_change (parser_state_t *parser_state)
@@ -1031,8 +1055,9 @@ static void change_completed (void)
 // where it is safe to call system_set_exec_state_flag().
 static void execute_cycle_start (void *data)
 {
-        system_set_exec_state_flag(EXEC_CYCLE_START);
-        atc_tc_advance();
+    execute_posted = false;
+    system_set_exec_state_flag(EXEC_CYCLE_START);
+    atc_tc_advance();
 }
 
 ISR_CODE static void ISR_FUNC(trap_control_cycle_start)(control_signals_t signals)
