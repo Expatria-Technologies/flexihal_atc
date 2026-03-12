@@ -4,15 +4,15 @@
 
 // ATC macro IDs — resolved by macros.c to /P<n>.macro in the VFS root.
 // Place the corresponding files at the root of the filesystem:
-//   P90.macro  — atc_change.ngc  — full carousel pick/place sequence
-//   P91.macro  — atc_return.ngc  — return spindle tool to carousel pocket
-//   P92.macro  — atc_measure.ngc — probe tool length against G59.3 toolsetter
-//   P93.macro  — atc_pause.ngc   — optional operator pause hook (chip cover etc.)
+//   P390.macro  — atc_change.ngc  — full carousel pick/place sequence
+//   P391.macro  — atc_return.ngc  — return spindle tool to carousel pocket
+//   P392.macro  — atc_measure.ngc — probe tool length against G59.3 toolsetter
+//   P393.macro  — atc_pause.ngc   — optional operator pause hook (chip cover etc.)
 // Must not overlap with macros.c reserved IDs (97-99) or user G65 P<n> macros.
-#define ATC_MACRO_ID_CHANGE   90
-#define ATC_MACRO_ID_RETURN   91
-#define ATC_MACRO_ID_MEASURE  92
-#define ATC_MACRO_ID_PAUSE    93
+#define ATC_MACRO_ID_CHANGE   390
+#define ATC_MACRO_ID_RETURN   391
+#define ATC_MACRO_ID_MEASURE  392
+#define ATC_MACRO_ID_PAUSE    393
 
 // Optional hook called after the machine arrives at the change position
 // (G30 or home Z) but before the STATE_TOOL_CHANGE pause.

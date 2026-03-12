@@ -118,6 +118,9 @@ static atc_status_flags_t atc_status;
 
 static tool_data_t current_tool = {}, *next_tool = NULL;
 
+static on_macro_execute_ptr on_macro_execute;
+static on_macro_return_ptr on_macro_return = NULL;
+
 static on_spindle_select_ptr on_spindle_select;
 static on_probe_toolsetter_ptr on_probe_fixture;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
@@ -134,6 +137,12 @@ static volatile uint32_t spin_lock = 0;
 static control_signals_callback_ptr control_interrupt_callback = NULL;
 static enqueue_realtime_command_ptr enqueue_realtime_command = NULL;
 
+#define ATC_MACRO_ID_TCFETCH      390 //fetch from tool carousel
+#define ATC_MACRO_ID_TCRETURN     391 //return to tool carousel
+#define ATC_MACRO_ID_HANDFETCH    392 //manual tool fetch (raise Z, optional go to G30, then return from macro and trap cycle start.  Update tool number after cycle start)
+#define ATC_MACRO_ID_HANDRETURN   393 //manual tool return (raise Z, optional go to G30, then return from macro and trap cycle start.  After cycle start Proceed with TCFETCH or HANDFETCH as appropriate)
+#define ATC_MACRO_ID_MEASURE      394 //probe tool length against G59.3 toolsetter
+
 // ---------------------------------------------------------------------------
 // Tool change state machine
 //
@@ -144,31 +153,37 @@ static enqueue_realtime_command_ptr enqueue_realtime_command = NULL;
 //
 //   TC_IDLE
 //     │
-//     ├─ outgoing in carousel? → TC_RETURN_OUTGOING  (P91.macro, no operator needed)
-//     │    └─ on macro complete → TC_PAUSE_UNLOAD (if incoming manual)
-//     │                        → TC_FETCH_INCOMING (if incoming in carousel)
+//     ├─ outgoing in carousel, incoming in carousel
+//     │    └─ → TC_RETURN_OUTGOING  (ATC_MACRO_ID_TCRETURN, fully autonomous)
+//     │         └─ on macro complete → TC_FETCH_INCOMING  (ATC_MACRO_ID_TCFETCH, fully autonomous)
+//     │                               └─ on macro complete → TC_IDLE - any tool in the carousel has been measured.
+//     │
+//     ├─ outgoing in carousel, incoming hand-loaded
+//     │    └─ → TC_RETURN_OUTGOING  (ATC_MACRO_ID_TCRETURN, fully autonomous)
+//     │         └─ on macro complete → TC_HAND_FETCH  (ATC_MACRO_ID_HANDFETCH + return and trap cycle-start)
+//     │                               └─ on cycle-start → TC_MEASURE (ATC_MACRO_ID_MEASURE) only if the tool has not been previously measured
+//     │                                                    └─ on macro complete → TC_IDLE
 //     │
 //     ├─ outgoing hand-loaded, incoming in carousel
-//     │    └─ → TC_PAUSE_UNLOAD  (G30 + P93.macro + wait cycle-start)
-//     │         └─ on cycle-start → TC_FETCH_INCOMING (P90.macro)
+//     │    └─ → TC_HAND_RETURN  (ATC_MACRO_ID_HANDRETURN + return and trap cycle-start)
+//     │         └─ on cycle-start → TC_FETCH_INCOMING  (ATC_MACRO_ID_TCFETCH, fully autonomous)
+//     │                             └─ on macro complete → TC_IDLE - any tool in the carousel has been measured.
 //     │
 //     └─ both hand-loaded
-//          └─ → TC_PAUSE_LOAD  (G30 + P93.macro + wait cycle-start)
-//               └─ on cycle-start → TC_MEASURE (P92.macro)
-//
-//   TC_FETCH_INCOMING  (P90.macro)
-//     └─ on macro complete → TC_MEASURE (P92.macro)
-//
-//   TC_MEASURE  (P92.macro)
-//     └─ on macro complete → TC_IDLE, restore spindle/coolant
+//          └─ → TC_HAND_RETURN  (ATC_MACRO_ID_HANDRETURN + return and trap cycle-start)
+//               └─ on cycle-start → TC_MEASURE (ATC_MACRO_ID_MEASURE) only if the tool has not been previously measured
+//                                    └─ on macro complete → TC_IDLE
+// 
+// The TC_MEASURE function needs to handle the T0 case before calling the measure macro.  T0 means no tool in the spindle, so measurement should not occur.
 // ---------------------------------------------------------------------------
 typedef enum {
     TC_IDLE = 0,
-    TC_RETURN_OUTGOING,     // P91.macro running — returning outgoing carousel tool
-    TC_PAUSE_UNLOAD,        // operator must remove hand-loaded outgoing tool; cycle-start trapped
-    TC_FETCH_INCOMING,      // P90.macro running — fetching incoming carousel tool
-    TC_PAUSE_LOAD,          // operator must install manual incoming tool; cycle-start trapped
-    TC_MEASURE,             // P92.macro running — probing tool length
+    TC_START,               // entry point — tool_change() calls atc_tc_advance() from here
+    TC_RETURN_OUTGOING,     // TCRETURN macro running — returning outgoing carousel tool
+    TC_HAND_RETURN,         // HANDRETURN macro running — operator must remove; cycle-start trapped
+    TC_FETCH_INCOMING,      // TCFETCH macro running — fetching incoming carousel tool
+    TC_HAND_FETCH,          // HANDFETCH macro running — operator must install; cycle-start trapped
+    TC_MEASURE,             // MEASURE macro running — probing tool length
 } tc_state_t;
 
 static tc_state_t   tc_state           = TC_IDLE;
@@ -336,6 +351,43 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 
 #if TOOLTABLE_ENABLE == 2
 
+typedef enum {
+    STANDALONE_NONE = 0,
+    STANDALONE_TCRETURN,    // $TCRETURN — return tool, clear spindle
+    STANDALONE_TCADD,       // $TCADD — deposit tool, clear spindle
+} standalone_op_t;
+
+static standalone_op_t standalone_op     = STANDALONE_NONE;
+static tool_id_t       standalone_tool_id = 0;
+static pocket_id_t     standalone_pocket  = 0;
+
+static void macro_exit (void)
+{
+    if(standalone_op != STANDALONE_NONE) {
+
+        // Clear spindle state — motion is now complete
+        memset(gc_state.tool, 0, sizeof(tool_data_t));
+        gc_state.tool_pending = 0;
+        current_tool.tool_id = 0;
+        report_add_realtime(Report_Tool);
+
+        char msg[64];
+        if(standalone_op == STANDALONE_TCADD)
+            sprintf(msg, "T%lu deposited in pocket %d — spindle empty",
+                    (unsigned long)standalone_tool_id, (int)standalone_pocket);
+        else
+            sprintf(msg, "T%lu returned to pocket %d — spindle empty",
+                    (unsigned long)standalone_tool_id, (int)standalone_pocket);
+
+        report_message(msg, Message_Info);
+        standalone_op = STANDALONE_NONE;
+    }
+
+    if(on_macro_return)
+        on_macro_return();
+}
+
+
 // $TCADD [Tn] [;name]  — Deposit the current spindle tool into the next free
 // carousel pocket and register it in the tooltable.
 //
@@ -345,8 +397,9 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 //   $TCADD T3 ;12mm EM  as above, with a name
 //
 // The machine must be IDLE and homed.  The tool must be clamped in the spindle.
-// The pocket assignment is written to the tooltable first; if the deposit motion
-// fails the pocket assignment is rolled back via $TCRM so the table stays clean.
+// The pocket assignment is written to the tooltable first; if the macro file
+// cannot be opened the pocket assignment is rolled back so the table stays clean.
+// Spindle state is cleared to T0 in macro_exit() once motion completes.
 
 static status_code_t carousel_add (sys_state_t state, char *args)
 {
@@ -382,7 +435,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             return parse_status;
         }
         while(args[cc] == ' ' || args[cc] == '\t') cc++;
-        if(args[cc] == ',')
+        if(args[cc] == ';')
             name = &args[cc + 1];
     }
 
@@ -393,6 +446,13 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             report_message("TCADD: no tool detected in spindle", Message_Warning);
             return Status_GcodeValueOutOfRange;
         }
+    }
+
+    // ── Confirm spindle is off before moving ─────────────────────────────────
+    spindle_ptrs_t *spindle = spindle_get(0);
+    if(spindle && spindle->get_state && spindle->get_state(spindle).on) {
+        report_message("TCADD: spindle must be off", Message_Warning);
+        return Status_GcodeValueOutOfRange;
     }
 
     // ── Assign pocket in tooltable ───────────────────────────────────────────
@@ -423,30 +483,30 @@ static status_code_t carousel_add (sys_state_t state, char *args)
             return Status_GcodeValueOutOfRange;
     }
 
-    // ── Deposit tool into assigned pocket via atc_return.ngc ─────────────────
-    // Set #4902 = outgoing pocket so atc_return.ngc knows where to deposit.
-    ngc_param_set(4902, (float)assigned_pocket);
+    // ── Deposit tool into assigned pocket via TCRETURN macro ─────────────────
+    ngc_param_set(4900, (float)tool_id);
+    ngc_param_set(4901, (float)assigned_pocket);
 
-    status_code_t motion_result = grbl.on_macro_execute(ATC_MACRO_ID_RETURN, (parameter_words_t){0}, 1);
-    if(motion_result == Status_Handled) motion_result = Status_OK;
-    if(motion_result != Status_OK) {
-        // Roll back the pocket assignment so the table stays consistent.
+    standalone_op      = STANDALONE_TCADD;
+    standalone_tool_id = (tool_id_t)tool_id;
+    standalone_pocket  = assigned_pocket;
+
+    status_code_t motion_result = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
+    if(motion_result != Status_Handled) {
+        // Macro file not found or other synchronous failure — roll back pocket assignment
+        standalone_op = STANDALONE_NONE;
         tooltable_carousel_remove((tool_id_t)tool_id);
         report_message("TCADD: deposit motion failed — pocket assignment rolled back", Message_Warning);
-        return motion_result;
+        return motion_result == Status_OK ? Status_FileOpenFailed : motion_result;
     }
 
-    char msg[60];
-    sprintf(msg, "T%lu deposited in pocket %u", (unsigned long)tool_id, (unsigned)assigned_pocket);
-    report_message(msg, Message_Info);
-
-    return Status_OK;
+    return Status_Unhandled;
 }
 
 // $TCRETURN  — Return the current spindle tool to its carousel pocket.
 //
-// Checks that the current tool has a carousel pocket assigned, sets #4902 to
-// that pocket, runs atc_return.ngc to physically deposit the tool, then clears
+// Checks that the current tool has a carousel pocket assigned, sets #4900 to
+// the tool_id and 4901 to the pocket, runs ATC_MACRO_ID_TCRETURN, to physically deposit the tool, then clears
 // the spindle state to T0.
 //
 // The machine must be homed and IDLE.  Spindle and coolant must be off.
@@ -483,25 +543,21 @@ static status_code_t carousel_return (sys_state_t state, char *args)
         return Status_GcodeValueOutOfRange;
     }
 
-    // Run atc_return.ngc to physically deposit the tool
-    ngc_param_set(4902, (float)pocket);
-    status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_RETURN, (parameter_words_t){0}, 1);
+    // Run ATC_MACRO_ID_TCRETURN to physically deposit the tool.
+    // Completion handled in macro_exit() via standalone_return_pending flag
+    // State cleanup (T0, reporting) happens there, not here.
+    ngc_param_set(4900, (float)tool_id);
+    ngc_param_set(4901, (float)pocket);
+
+    standalone_return_pending = true;
+    status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
     if(result != Status_Handled) {
+        standalone_return_pending = false;
         report_message("TCRETURN: return motion failed", Message_Warning);
         return result == Status_OK ? Status_FileOpenFailed : result;
     }
 
-    // Clear spindle state to T0
-    memset(gc_state.tool, 0, sizeof(tool_data_t));
-    gc_state.tool_pending = 0;
-    current_tool.tool_id = 0;
-    report_add_realtime(Report_Tool);
-
-    char msg[48];
-    sprintf(msg, "T%lu returned to pocket %d — spindle empty", (unsigned long)tool_id, (int)pocket);
-    report_message(msg, Message_Info);
-
-    return Status_OK;
+    return Status_Unhandled;
 }
 
 
@@ -622,108 +678,84 @@ FLASHMEM static void onToolSelect (tool_data_t *tool, bool next)
 
 #endif
 
-// ---------------------------------------------------------------------------
-// atc_tc_advance() — advances the tool change state machine one step.
-//
-// Called from:
-//   - grbl.on_macro_return  after a macro (P90/P91/P92) completes
-//   - the cycle-start trap  after the operator presses cycle start
-//
-// Each call either:
-//   - starts the next macro (returns immediately, macro is async)
-//   - installs the cycle-start trap (returns, waits for operator)
-//   - restores spindle/coolant and resets state (sequence complete)
-// ---------------------------------------------------------------------------
-static void atc_tc_advance (void)
+static status_code_t atc_tc_advance (void)
 {
+    status_code_t status = Status_Handled;
+
     switch(tc_state) {
 
-        // ── P91 (return outgoing) just finished ───────────────────────────
-        // If incoming is in the carousel, fetch it now.
-        // If incoming is manual, move to G30, run pause macro, wait for
-        // operator to load the tool and press cycle start.
+        // ── Entry point ───────────────────────────────────────────────────
+        case TC_START:
+            if(tc_outgoing_pocket >= 1) {
+                tc_state = TC_RETURN_OUTGOING;
+                ngc_param_set(4900, (float)current_tool.tool_id);
+                ngc_param_set(4901, (float)tc_outgoing_pocket);
+                status = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
+            } else {
+                tc_state = TC_HAND_RETURN;
+                status = grbl.on_macro_execute(ATC_MACRO_ID_HANDRETURN, (parameter_words_t){0}, 1);
+            }
+            if(status != Status_Handled) {
+                tc_state = TC_IDLE;
+                tooltable_set_m6_prev(-1);
+                return status == Status_OK ? Status_FileOpenFailed : status;
+            }
+            break;
+
+        // ── TCRETURN or HANDRETURN complete; fetch incoming ───────────────
         case TC_RETURN_OUTGOING:
+        case TC_HAND_RETURN:
             if(tc_incoming_pocket >= 1) {
                 tc_state = TC_FETCH_INCOMING;
                 ngc_param_set(4900, (float)next_tool->tool_id);
                 ngc_param_set(4901, (float)tc_incoming_pocket);
-                ngc_param_set(4902, 0.0f); // outgoing already returned
-                grbl.on_macro_execute(ATC_MACRO_ID_CHANGE, (parameter_words_t){0}, 1);
+                status = grbl.on_macro_execute(ATC_MACRO_ID_TCFETCH, (parameter_words_t){0}, 1);
             } else {
-                // Outgoing returned to carousel, incoming is hand-loaded.
-                // Prompt the operator to install the new tool, then wait.
-                // tc_operator_unload_pause() re-used here: it moves to G30,
-                // runs P93, and blocks in STATE_TOOL_CHANGE until cycle-start.
-                // On return we fall through immediately to TC_PAUSE_LOAD to
-                // fire the measure macro — no separate trap needed.
-                tc_state = TC_PAUSE_LOAD;
-                spindle_all_off(false);
-                hal.coolant.set_state((coolant_state_t){0});
-                status_code_t status = tc_manual_tool_change(atc_parser_state);
-                if(status != Status_OK) {
-                    tc_state = TC_IDLE;
-                    tooltable_set_m6_prev(-1);
-                    grbl.report.status_message(status);
-                    return;
-                }
-                // tc_manual_tool_change() already probed — sequence complete.
+                tc_state = TC_HAND_FETCH;
+                status = grbl.on_macro_execute(ATC_MACRO_ID_HANDFETCH, (parameter_words_t){0}, 1);
+            }
+            if(status != Status_Handled) {
                 tc_state = TC_IDLE;
-                coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
-                spindle_t *spindle = gc_spindle_get(-1);
-                spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
-                if(on_tool_change)
-                    on_tool_change(atc_parser_state);
+                tooltable_set_m6_prev(-1);
+                return status == Status_OK ? Status_FileOpenFailed : status;
             }
             break;
 
-        // ── Cycle-start received after operator loaded manual tool ────────
-        // (Also reached after TC_RETURN_OUTGOING → TC_PAUSE_LOAD path)
-        case TC_PAUSE_LOAD:
-            tc_state = TC_MEASURE;
-            grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
-            break;
-
-        // ── P90 (fetch incoming) just finished ────────────────────────────
-        // Always measure after a carousel fetch.
+        // ── TCFETCH complete → no measure needed, sequence done ───────────
         case TC_FETCH_INCOMING:
-            tc_state = TC_MEASURE;
-            grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+            atc_tc_complete();
             break;
 
-        // ── P92 (measure) just finished, or TC_PAUSE_UNLOAD cycle-start ──
-        // Sequence complete — restore and clean up.
+        // ── HANDFETCH complete (cycle-start trap fired) ───────────────────
+        case TC_HAND_FETCH:
+            if(next_tool->tool_id == 0 || next_tool->tool_offset.z != 0.0f) {
+                atc_tc_complete();
+            } else {
+                tc_state = TC_MEASURE;
+                grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+            }
+            break;
+
+        // ── MEASURE complete → sequence done ─────────────────────────────
         case TC_MEASURE:
         default:
-            tc_state = TC_IDLE;
-            coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
-            spindle_t *spindle = gc_spindle_get(-1);
-            spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
-            if(on_tool_change)
-                on_tool_change(atc_parser_state);
+            atc_tc_complete();
             break;
     }
+
+    return Status_Unhandled;
 }
 
-// ---------------------------------------------------------------------------
-// tool_change() — hal.tool.change handler, called by grblHAL when M6 is parsed.
-//
-// Sets up the state machine and starts the first step, then returns
-// Status_Unhandled so the stream machinery drives macro execution.
-//
-// Decision tree:
-//
-//   Outgoing tool came from the carousel?
-//   ├── YES → enqueue P91.macro to return it (no operator pause needed)
-//   └── NO  → (outgoing is hand-loaded)
-//             Optionally move to G30, run P93 pause macro, trap cycle start
-//             waiting for operator to remove tool
-//
-//   Requested tool in carousel?
-//   ├── YES → enqueue P90.macro to fetch it, then P92 to measure
-//   └── NO  → (incoming is manual)
-//             Optionally move to G30, run P93 pause macro, trap cycle start
-//             waiting for operator to load tool, then P92 to measure
-// ---------------------------------------------------------------------------
+static void atc_tc_complete (void)
+{
+    tc_state = TC_IDLE;
+    coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
+    spindle_t *spindle = gc_spindle_get(-1);
+    spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
+    if(on_tool_change)
+        on_tool_change(atc_parser_state);
+}
+
 static status_code_t tool_change (parser_state_t *parser_state)
 {
     atc_parser_state = parser_state;
@@ -734,14 +766,10 @@ static status_code_t tool_change (parser_state_t *parser_state)
     if(current_tool.tool_id == next_tool->tool_id)
         return Status_OK;
 
-    spindle_all_off(false);
-    hal.coolant.set_state((coolant_state_t){0});
-
 #if TOOLTABLE_ENABLE == 2
 
     tool_table_entry_t *incoming_entry = grbl.tool_table.get_tool(next_tool->tool_id);
 
-    // Unknown tool — fall back to previous handler (core manual change).
     if(!incoming_entry || !incoming_entry->data ||
        (incoming_entry->data->tool_id == 0 && parser_state->tool_pending != 0))
         return on_tool_change ? on_tool_change(parser_state) : Status_OK;
@@ -749,123 +777,23 @@ static status_code_t tool_change (parser_state_t *parser_state)
     tc_incoming_pocket = (pocket_id_t)incoming_entry->pocket;
     tc_outgoing_pocket = get_carousel_pocket(current_tool.tool_id);
 
-    // Ensure incoming tool has a table entry for G65 P2 in P92.macro.
     if(next_tool->tool_id != 0)
         tooltable_register_tool(next_tool->tool_id, NULL);
 
-    // Tell tooltable.c which pocket the outgoing tool came from so
-    // onToolChanged() can update the pocket table correctly.
     tooltable_set_m6_prev(tc_outgoing_pocket >= 1 ? tc_outgoing_pocket : -1);
 
-    status_code_t status;
+    spindle_all_off(false);
+    hal.coolant.set_state((coolant_state_t){0});
 
-    if(tc_outgoing_pocket >= 1) {
-        // ── Outgoing tool came from the carousel ───────────────────────────
-        // Return it autonomously — no operator intervention, no G30 move,
-        // no cycle-start trap.  The macro (P91) drives the carousel motion.
-        // On completion the state machine will continue to the next step
-        // based on whether the incoming tool is also in the carousel.
-        tc_state = TC_RETURN_OUTGOING;
-        ngc_param_set(4902, (float)tc_outgoing_pocket);
-        status = grbl.on_macro_execute(ATC_MACRO_ID_RETURN, (parameter_words_t){0}, 1);
-        if(status != Status_Handled) {
-            tc_state = TC_IDLE;
-            tooltable_set_m6_prev(-1);
-            return status == Status_OK ? Status_FileOpenFailed : status;
-        }
-
-    } else if(tc_incoming_pocket >= 1) {
-        // ── Outgoing is hand-loaded, incoming is in the carousel ───────────
-        // Operator must remove the outgoing tool before carousel motion.
-        // Optionally move to G30, run the pause macro (P93), then wait for
-        // cycle start (cycle-start trap, installed separately).
-        // On cycle-start the state machine continues to TC_FETCH_INCOMING.
-        tc_state = TC_PAUSE_UNLOAD;
-        status = tc_operator_unload_pause(parser_state);
-        if(status != Status_OK) {
-            tc_state = TC_IDLE;
-            tooltable_set_m6_prev(-1);
-            return status;
-        }
-        // tc_operator_unload_pause() blocks until cycle-start — now fetch.
-        spindle_all_off(false);
-        hal.coolant.set_state((coolant_state_t){0});
-        tc_state = TC_FETCH_INCOMING;
-        ngc_param_set(4900, (float)next_tool->tool_id);
-        ngc_param_set(4901, (float)tc_incoming_pocket);
-        ngc_param_set(4902, 0.0f);
-        status = grbl.on_macro_execute(ATC_MACRO_ID_CHANGE, (parameter_words_t){0}, 1);
-        if(status != Status_Handled) {
-            tc_state = TC_IDLE;
-            tooltable_set_m6_prev(-1);
-            return status == Status_OK ? Status_FileOpenFailed : status;
-        }
-
-    } else {
-        // ── Both outgoing and incoming are hand-loaded ─────────────────────
-        // Pure manual swap.  Move to G30, run the pause macro (P93), then
-        // wait for cycle start (operator installs new tool and presses go).
-        // On cycle-start the state machine continues to TC_MEASURE.
-        tc_state = TC_PAUSE_LOAD;
-        status = tc_manual_tool_change(parser_state);
-        if(status != Status_OK) {
-            tc_state = TC_IDLE;
-            tooltable_set_m6_prev(-1);
-            return status;
-        }
-        // tc_manual_tool_change() blocks until after probe — restore and done.
-        tc_state = TC_IDLE;
-        coolant_restore(gc_state.modal.coolant, settings.coolant.on_delay);
-        spindle_t *spindle = gc_spindle_get(-1);
-        spindle_restore(spindle->hal, spindle->state, spindle->rpm, settings.spindle.on_delay);
-        return on_tool_change ? on_tool_change(parser_state) : Status_OK;
-    }
+    tc_state = TC_START;
+    return atc_tc_advance();
 
 #else
     next_tool = NULL;
     parser_state->tool_change = true;
     system_set_exec_state_flag(EXEC_TOOL_CHANGE);
-    protocol_execute_realtime();
-#endif
-
-    // A macro has been started — return Status_Unhandled so the stream
-    // machinery drives the file to completion via protocol_main_loop.
-    // The state machine continues in atc_tc_advance() called from on_macro_return.
     return Status_Unhandled;
-}
-// Pause hook registered with tc_set_pause_hook().
-// Runs atc_pause.ngc if it exists on the SD card; silently skips if absent.
-// Reports the tool name/comment to the stream before launching the macro so
-// the operator sees it regardless of whether atc_pause.ngc is present.
-static status_code_t run_pause_hook (void)
-{
-#if TOOLTABLE_ENABLE == 2
-    // Report the tool name to the operator now, at the change position,
-    // before any NGC macro runs.  next_tool is set in tool_change().
-    if(next_tool) {
-        const char *name = tooltable_get_name(next_tool->tool_id);
-        char msg[128];
-        if(name)
-            snprintf(msg, sizeof(msg), "Load T%lu (%s) and press cycle start",
-                     (unsigned long)next_tool->tool_id, name);
-        else
-            snprintf(msg, sizeof(msg), "Load T%lu and press cycle start",
-                     (unsigned long)next_tool->tool_id);
-        report_message(msg, Message_Info);
-    }
 #endif
-
-    vfs_stat_t st;
-    if(vfs_stat("/linuxcnc/atc_pause.ngc", &st) != 0)
-        return Status_OK;   // file absent — skip silently
-
-    FLEXIHAL_DEBUG_PRINT("M6: running optional atc_pause.ngc hook");
-
-    // Run atc_pause.ngc (e.g. to open a chip cover) and wait for it to
-    // complete.  Do NOT issue STATE_TOOL_CHANGE here — the operator pause
-    // is the caller's responsibility (step 4 of tc_manual_tool_change).
-    status_code_t status = grbl.on_macro_execute(ATC_MACRO_ID_PAUSE, (parameter_words_t){0}, 1);
-    return (status == Status_Handled) ? Status_OK : status;
 }
 
 static status_code_t carousel_measure (sys_state_t state, char *args)
@@ -1074,15 +1002,6 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
 #if TOOLTABLE_ENABLE == 2
 
-// ---------------------------------------------------------------------------
-// Cycle-start trapping during tool change pause
-//
-// The plugin's tool_change() is fully synchronous — it blocks inside
-// protocol_execute_realtime() in STATE_TOOL_CHANGE.  Cycle start just needs
-// to unblock that wait by posting EXEC_CYCLE_START; it does NOT need to
-// dispatch to execute_probe / execute_restore / execute_warning (those are
-// part of the core's async manual-change path which the plugin does not use).
-//
 // change_completed() restores the HAL pointers when the change finishes or
 // is aborted.  It mirrors the core's change_completed() in tool_change.c.
 // ---------------------------------------------------------------------------
@@ -1112,7 +1031,8 @@ static void change_completed (void)
 // where it is safe to call system_set_exec_state_flag().
 static void execute_cycle_start (void *data)
 {
-    system_set_exec_state_flag(EXEC_CYCLE_START);
+        system_set_exec_state_flag(EXEC_CYCLE_START);
+        atc_tc_advance();
 }
 
 ISR_CODE static void ISR_FUNC(trap_control_cycle_start)(control_signals_t signals)
@@ -1387,7 +1307,8 @@ void atc_init (void)
     // filesystem, which is the intended override behaviour.
 #if TOOLTABLE_ENABLE == 2
     hal.tool.atc_get_state = atc_get_state;
-    tc_set_pause_hook(run_pause_hook);
+    on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = macro_exit;
 #endif
 
     driver_reset = hal.driver_reset;
