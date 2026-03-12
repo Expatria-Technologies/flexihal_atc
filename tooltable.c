@@ -64,7 +64,7 @@ static uint16_t          n_tools      = 0;      // number of valid tools in inde
 static uint16_t          index_cap    = 0;      // allocated capacity of tt_index
 static tool_index_entry_t *tt_index   = NULL;   // lightweight RAM index
 static tool_id_t         current_tool = 0;      // tool currently in spindle
-static char              filename[]   = "/linuxcnc/tooltable.tbl";
+static char              filename[]   = "/tooltable.tbl";
 
 // Zeroed fallback pocket — always valid, used before FS mounts or on empty table.
 // Mirrors the pocket0 pattern from the TOOLTABLE_ENABLE==1 implementation.
@@ -142,9 +142,10 @@ static uint16_t index_count_in_carousel (void)
     return count;
 }
 
-static pocket_id_t index_find_free_pocket (void)
+static pocket_id_t index_find_free_pocket (uint16_t max_pockets)
 {
-    for(pocket_id_t candidate = 1; candidate <= (pocket_id_t)(n_tools + 1); candidate++) {
+    pocket_id_t limit = (max_pockets > 0) ? (pocket_id_t)max_pockets : (pocket_id_t)(n_tools + 1);
+    for(pocket_id_t candidate = 1; candidate <= limit; candidate++) {
         bool in_use = false;
         for(uint16_t i = 0; i < n_tools; i++) {
             if(tt_index[i].pocket_id == candidate) {
@@ -693,7 +694,7 @@ carousel_op_result_t tooltable_carousel_add (tool_id_t tool_id, uint16_t max_poc
     if(max_pockets > 0 && index_count_in_carousel() >= max_pockets)
         return CarouselOp_NoPocketAvailable;
 
-    pocket_id_t free_pocket = index_find_free_pocket();
+    pocket_id_t free_pocket = index_find_free_pocket(max_pockets);
     if(free_pocket < 0)
         return CarouselOp_NoPocketAvailable;
 
@@ -782,8 +783,9 @@ static void onToolChanged (tool_data_t *tool)
 
         // If the incoming tool is not in the file at all, create it with zeroed
         // offsets now so setTool() (called after probing) has a valid entry to update.
-        tool_table_entry_t *existing = getTool(tool->tool_id);
-        if(!existing->data && fs_available) {
+        // Note: getTool() always returns non-NULL data (falls back to pocket0), so
+        // we check the RAM index directly to determine whether the tool is truly known.
+        if(fs_available && index_find(tool->tool_id) == NULL) {
             tool_pocket_t blank = {0};
             blank.tool.tool_id = tool->tool_id;
             blank.pocket_id    = -1;   // P0 — no pocket yet

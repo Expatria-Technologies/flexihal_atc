@@ -55,9 +55,9 @@
 #include "grbl/protocol.h"
 #include "grbl/nuts_bolts.h"
 #include "grbl/state_machine.h"
-#include "grbl/stream_file.h"
 
 #include "atc_tool_change.h"
+#include "tooltable.h"
 
 static tc_pause_hook_ptr pause_hook = NULL;
 
@@ -107,65 +107,48 @@ static bool go_home_z (coord_data_t *target, plane_t *plane, plan_line_data_t *p
 // ---------------------------------------------------------------------------
 // run_measure_macro()
 //
-// Stream atc_measure.ngc into the grblHAL motion pipeline using the same
-// stream_redirect_read() pattern as atc_macro_start() in flexihal_atc.c.
-// Execution is synchronous from the caller's perspective: the function does
-// not return until the macro has completed (M2/M99) or been aborted.
-//
-// The macro is responsible for:
-//   - cancelling any active TLO (G49)
-//   - moving to G59.3 (toolsetter XY and approach Z)
-//   - fast seek + slow locate probe cycle
-//   - storing the gauge length via G10 L11 P<tool> Z0
-//   - activating the stored offset via G43
-//   - retracting to home Z
-//
-// Returns Status_OK on success, Status_FileOpenFailed if the file is missing,
-// or Status_Reset if the macro was aborted.
+// Trigger atc_measure.ngc via the grbl.on_macro_execute hook.
+// Ensures the current tool has a table entry first so G65 P2 in the macro
+// does not error with "undefined tool".
+// Returns Status_Handled on success (macro started), error code otherwise.
 // ---------------------------------------------------------------------------
-#define ATC_MEASURE_MACRO "/linuxcnc/atc_measure.ngc"
-
-static status_code_t measure_macro_status;
-
-static status_code_t measure_on_error (status_code_t status)
-{
-    char msg[48];
-    snprintf(msg, sizeof(msg), "ATC measure error: %d", (uint8_t)status);
-    report_message(msg, Message_Warning);
-    measure_macro_status = status;
-    return status;
-}
-
-static status_code_t measure_on_eof (vfs_file_t *file, status_code_t status)
-{
-    measure_macro_status = status;
-    return status;
-}
 
 static status_code_t run_measure_macro (void)
 {
-    // In check mode just verify the file exists.
-    if(state_get() == STATE_CHECK_MODE) {
-        vfs_stat_t st;
-        return vfs_stat(ATC_MEASURE_MACRO, &st) == 0 ? Status_OK : Status_FileOpenFailed;
-    }
+    bool ok;
+    plan_line_data_t plan_data;
+    coord_data_t target = {};
+    plane_t plane;
+    get_probe_plane(&plane, &gc_state.modal);    
+   
+    // Clear tool_change state so the subsequent home move and probe macro
+    // are not blocked by the NGC executor's tool-change guard.
+    gc_state.tool_change = false;
 
-    measure_macro_status = Status_OK;
+    // ── 5. Z to home after operator interaction ──────────────────────────────
+    plan_data_init(&plan_data);
+    plan_data.condition.rapid_motion = On;
 
-    vfs_file_t *file = stream_redirect_read(ATC_MEASURE_MACRO,
-                                            measure_on_error,
-                                            measure_on_eof);
-    if(file == NULL) {
-        report_message("ATC: atc_measure.ngc not found at /linuxcnc/", Message_Warning);
-        return Status_FileOpenFailed;
-    }
+    if(!go_home_z(&target, &plane, &plan_data))
+        return Status_Reset;
 
-    // Pump the grblHAL realtime loop until the macro finishes.
-    // This mirrors the pattern used by tool_change() in flexihal_atc.c after
-    // atc_macro_start() + EXEC_TOOL_CHANGE.
-    protocol_execute_realtime();
+    if(!protocol_buffer_synchronize())
+        return Status_Reset;
 
-    return ABORTED ? Status_Reset : measure_macro_status;
+    sync_position();
+    
+    // Ensure the current tool has a table entry so G65 P2 in atc_measure.ngc
+    // does not error with "undefined tool".
+    // During M6, gc_state.tool still holds the old tool while tool_pending
+    // holds the incoming tool — matching what #5400 returns in the macro.
+    tool_id_t measuring_tool = gc_state.tool_pending != 0
+                               ? gc_state.tool_pending
+                               : gc_state.tool->tool_id;
+    if(measuring_tool != 0)
+        tooltable_register_tool(measuring_tool, NULL);
+
+    status_code_t status = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+    return (status == Status_Handled) ? Status_OK : status;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,13 +195,17 @@ status_code_t tc_reprobe_tool (parser_state_t *parser_state)
     if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT))
         return Status_HomingRequired;
 
-    // Clear the stored Z offset so atc_measure.ngc probes unconditionally.
-    // gc_execute_block() runs a single gcode line through the parser inline.
-    char cmd[24];
-    snprintf(cmd, sizeof(cmd), "G10L1P%dZ0", (int)gc_state.tool->tool_id);
-    status_code_t status = gc_execute_block(cmd);
-    if(status != Status_OK)
-        return status;
+    if(gc_state.tool->tool_id == 0)
+        return Status_GCodeToolError;
+
+    // Ensure the tool has a table entry, then clear its Z offset so that
+    // G65 P2 in atc_measure.ngc returns 0 and the skip guard falls through.
+    tooltable_register_tool(gc_state.tool->tool_id, NULL);
+
+    tool_data_t tool_data = {};
+    tool_data.tool_id = gc_state.tool->tool_id;
+    // All offsets and radius remain zero — this clears the Z entry.
+    grbl.tool_table.set_tool(&tool_data);
 
     return run_measure_macro();
 #endif
@@ -297,18 +284,6 @@ status_code_t tc_operator_unload_pause (parser_state_t *parser_state)
 
     if(ABORTED)
         return Status_Reset;
-
-    // ── 5. Return to home Z — ready for carousel pick ────────────────────────
-    plan_data_init(&plan_data);
-    plan_data.condition.rapid_motion = On;
-
-    if(!go_home_z(&target, &plane, &plan_data))
-        return Status_Reset;
-
-    if(!protocol_buffer_synchronize())
-        return Status_Reset;
-
-    sync_position();
 
     return Status_OK;
 #endif
@@ -397,6 +372,11 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
     if(ABORTED)
         return Status_Reset;
 
+/*    // Clear tool_change state so the subsequent home move and probe macro
+    // are not blocked by the NGC executor's tool-change guard.
+    parser_state->tool_change = false;
+    gc_state.tool_change = false;
+
     // ── 5. Z to home after operator interaction ──────────────────────────────
     plan_data_init(&plan_data);
     plan_data.condition.rapid_motion = On;
@@ -411,6 +391,8 @@ status_code_t tc_manual_tool_change (parser_state_t *parser_state)
 
     // ── 6. Probe the new tool ────────────────────────────────────────────────
     return run_measure_macro();
+
+    */
 #endif
 }
 
