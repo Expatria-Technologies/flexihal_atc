@@ -141,6 +141,8 @@ static enqueue_realtime_command_ptr enqueue_realtime_command = NULL;
 #define ATC_MACRO_ID_HANDFETCH    392 //manual tool fetch (raise Z, optional go to G30, then return from macro and trap cycle start.  Update tool number after cycle start)
 #define ATC_MACRO_ID_HANDRETURN   393 //manual tool return (raise Z, optional go to G30, then return from macro and trap cycle start.  After cycle start Proceed with TCFETCH or HANDFETCH as appropriate)
 #define ATC_MACRO_ID_MEASURE      394 //probe tool length against G59.3 toolsetter
+#define ATC_MACRO_ID_OPEN         395 //Open the ATC carousel - to do
+#define ATC_MACRO_ID_CLOSE        396 //Close the ATC carousel - to do
 
 // ---------------------------------------------------------------------------
 // Tool change state machine
@@ -839,16 +841,12 @@ static status_code_t atc_tc_advance (void)
         // ── HANDFETCH complete (cycle-start trap fired) ───────────────────
         case TC_HAND_FETCH:
             last_fetched_pocket = -1;   // hand-loaded — no carousel pocket
-            if(next_tool->tool_id == 0 || next_tool->offset.z != 0.0f) {
-                atc_tc_complete();
-            } else {
-                tc_state = TC_MEASURE;
-                status = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
-                if(status != Status_Handled) {
-                    change_completed();
-                    tc_state = TC_IDLE;
-                    return status == Status_OK ? Status_FileOpenFailed : status;
-                }
+            tc_state = TC_MEASURE;
+            status = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
+            if(status != Status_Handled) {
+                change_completed();
+                tc_state = TC_IDLE;
+                return status == Status_OK ? Status_FileOpenFailed : status;
             }
             break;
 

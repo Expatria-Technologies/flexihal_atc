@@ -42,11 +42,18 @@ G53 G1 Z#4925 F#4932
 
 ; Engage outgoing pocket (P3) — deposit tool, open drawbar
 G53 G1 X#4926 Y#4927 Z#4928 F#4932
+
+; sync motion
+G4 P0
+
 $DRBO
 G4 P0.5
 
 ; Exit outgoing pocket (P4)
 G53 G1 X#4929 Y#4930 Z#4931 F#4932
+
+; sync motion
+G4 P0
 
 $DRBC
 G4 P0.5

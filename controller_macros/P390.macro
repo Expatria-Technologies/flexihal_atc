@@ -39,11 +39,18 @@ G53 G0 X#4920 Y#4921
 ; Move to P4
 G53 G1 X#4929 Y#4930 Z#4931 F#4932
 
+; sync motion
+G4 P0
 ; open drawbar
 $DRBO
+G4 P0.5
 
 ; Descend to incoming pocket (P4 → P3) — clamp tool
 G53 G1 X#4926 Y#4927 Z#4928 F#4932
+
+; sync motion
+G4 P0
+
 $DRBC
 G4 P0.5
 

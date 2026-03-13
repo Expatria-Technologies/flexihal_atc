@@ -48,11 +48,7 @@
 ;   directly via G43 H#5400.  This avoids unnecessary toolsetter cycles when
 ;   the carousel returns a tool that was measured in a previous session.
 ;
-;   A zero Z offset means the tool has never been probed (or was explicitly
-;   cleared by tc_reprobe_tool() to force re-measurement).  No real spindle
-;   tool has a true zero gauge length, so zero is safe to use as a sentinel.
-;
-;   The C caller (tc_probe_tool / tc_manual_tool_change) ensures the tool
+;   The C caller ensures the tool
 ;   always has a table entry before this macro runs via tooltable_register_tool(),
 ;   so G65 P2 will always find a valid entry rather than erroring.
 ;
@@ -91,7 +87,7 @@ o110 if [#<_value> NE 0]
   (print, ATC: tool #5400 already measured -- activating stored offset)
   G43 H#5400
   M2
-o110 endif
+o110 else
 
 ; ── 3. Cancel active TLO ─────────────────────────────────────────────────────
 G49
@@ -117,13 +113,8 @@ o120 if [#5070 NE 1]
   (abort, ATC measure: toolsetter not triggered on seek -- check $342 and G59.3 Z)
 o120 endif
 
-; ── 9. Retract before slow probe ─────────────────────────────────────────────
-G91
-G1 Z[PRM[342] / 10] F[PRM[345]]
-G90
-
-; ── 10. Slow locate probe — G38.2 (probe toward, error on miss) ──────────────
-G38.2 Z[#5383 - PRM[342]] F[PRM[343]]
+; ── 10. Slow locate probe — G38.4 (probe away, error on loss of contact) ──────
+G38.4 Z[#5060_z + PRM[342]] F[PRM[343]]
 
 ; ── 11. Store gauge length in tool table ─────────────────────────────────────
 ; Z0 means "tool tip is at the G59.3 Z origin" — grblHAL back-calculates the
@@ -133,8 +124,10 @@ G10 L11 P#5400 Z0
 ; ── 12. Activate tool length offset ──────────────────────────────────────────
 G43 H#5400
 
-(print, ATC: tool #5400 measured and stored)
+G65 P2 Q#5400 R2
+(print, ATC: tool #5400 measured at Z[#5061_z] -- offset Z[#<_value>] stored)
 
+o110 endif
 ; ── 13. Retract to home Z ────────────────────────────────────────────────────
 G53 G0 Z0
 
