@@ -1,4 +1,4 @@
-; P200.macro — ATC geometry configuration (four-positions style)
+; P200.macro — ATC geometry and probe configuration
 ;
 ; Copy this file to the grblHAL filesystem root and set the startup line:
 ;
@@ -6,9 +6,6 @@
 ;
 ; This ensures geometry parameters are loaded automatically on every boot.
 ; To set the startup line, send the above command from MDI or a terminal.
-;
-; This macro sets the geometry parameters used by atc_change.ngc and
-; atc_return.ngc.  All coordinates are machine coordinates (G53).
 ;
 ; ── four-positions concept ───────────────────────────────────────────
 ;
@@ -24,27 +21,6 @@
 ;   externally — either by a dedicated axis (A/B) or by a separate MCU.
 ;   The carousel must be at the correct pocket before the spindle moves to P2.
 ;
-; ── Parameters set by this macro ─────────────────────────────────────────────
-;
-;   #4920  P1 X  Safe position X
-;   #4921  P1 Y  Safe position Y
-;   #4922  P1 Z  Safe position Z  (typically Z home = 0)
-;
-;   #4923  P2 X  Approach X
-;   #4924  P2 Y  Approach Y
-;   #4925  P2 Z  Approach Z
-;
-;   #4926  P3 X  Engage X
-;   #4927  P3 Y  Engage Y
-;   #4928  P3 Z  Engage Z
-;
-;   #4929  P4 X  Exit X
-;   #4930  P4 Y  Exit Y
-;   #4931  P4 Z  Exit Z
-;
-;   #4932        Feed rate for all carousel positioning moves (mm/min)
-;
-
 ; ── Position 1: Safe ──────────────────────────────────────────────────────────
 #4920 = -80.71       ; X (machine coords)
 #4921 = 2.000        ; Y
@@ -58,19 +34,23 @@
 ; ── Position 3: Engage ────────────────────────────────────────────────────────
 #4926 = -20.71        ; X (machine coords)
 #4927 =  2.000        ; Y
-#4928 = -137.81       ; Z - tool fully seated
+#4928 = -137.81       ; Z — tool fully seated
 
 ; ── Position 4: Exit ──────────────────────────────────────────────────────────
 #4929 = -20.71        ; X (machine coords)
 #4930 = 2.0000        ; Y
-#4931 = 0.00000       ; Z - spindle fully clear
+#4931 = 0.00000       ; Z — spindle fully clear
 
 ; ── Feed rate ─────────────────────────────────────────────────────────────────
-#4932 = 1500.0       ; mm/min — all carousel positioning moves
+#4932 = 1500.0        ; mm/min — all carousel positioning moves
 
-; ── Toolsetter ────────────────────────────────────────────────────────────────
+; ── Probe settings ────────────────────────────────────────────────────────────
 ; Toolsetter XYZ is read from G59.3 at probe time (#5381, #5382, #5383).
 ; Configure G59.3 via G10 L2 P9 or the grblHAL coordinate system settings.
+#4933 = 150.0          ; probing distance (mm) — max downward travel toward toolsetter
+#4934 = 100.0         ; locate feed rate (mm/min) — slow, accurate second probe
+#4935 = 800.0         ; seek feed rate (mm/min) — fast first probe
+#4936 = 5.0           ; pulloff distance (mm) — retract between fast and slow probes
 
 ; ── Carousel homing ───────────────────────────────────────────────────────────
 ; Home the carousel
@@ -79,4 +59,4 @@
 ;g4p1
 ;G65 P201
 
-M2
+M99

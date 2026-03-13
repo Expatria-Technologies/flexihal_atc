@@ -1,19 +1,16 @@
-; ATC_MACRO_ID_HANDRETURN   393 //manual tool return (raise Z, optional go to G30, then return from macro and trap cycle start.  After cycle start Proceed with TCFETCH or HANDFETCH as appropriate)
+; ATC_MACRO_ID_HANDRETURN   393 //manual tool return (raise Z, go to G30, pause for operator to remove tool)
 ;
-; Called when the outgoing tool needs to be removed by hand (no pocket entry)
-; and before the operator pause.
+; Called when the outgoing tool needs to be removed by hand (no pocket entry).
+; Pauses for the operator to remove the outgoing hand-loaded tool.
 ;
-; Parameters set by plugin before this macro runs:
-;   #4900 = incoming tool number
-;   #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
+; Parameters:
+;   #4900 = outgoing tool number
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
-; G30 (second home position) is used as the manual tool change position.
 G53 G0 Z0
 G30
 
 ; ── Notify operator ───────────────────────────────────────────────────────────
-; Add any additional signalling here (lights, buzzers, etc.)
-(MSG, Load tool #4900 and press cycle start)
+(print, ATC: remove tool #4900 and press cycle start)
 M0
-M2
+M99

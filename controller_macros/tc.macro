@@ -6,6 +6,7 @@
 ;   #4901 = outgoing pocket   (-1 if hand-loaded or unknown after power cycle)
 ;   #4902 = incoming tool ID  (0 = T0, empty spindle)
 ;   #4903 = incoming pocket   (-1 if hand-loaded)
+;   #4904 = 0 if called from a real Txx, 1 if called from M61
 ;
 ; Subroutines:
 ;   /P390.macro  — fetch carousel tool    (#4900=tool_id, #4901=pocket)
@@ -17,40 +18,53 @@
 ; Prerequisites:
 ;   - Machine homed
 ;   - Spindle and coolant off
+;
+; Note: macros.c fires tc.macro on M61 as well as M6. The o10 guard detects
+; this case (#4902 EQ #4900 means parameters were not updated by onToolSelect)
+; and skips the tool change body entirely.
 
-(print, ATC: tool change T[#4900] -> T[#4902])
-(print, ATC: outgoing pocket=[#4901] incoming pocket=[#4903])
+(print, ATC: tool change tc.macro)
 
-; ── Step 1: Return outgoing tool ─────────────────────────────────────────────
-o100 if [#4900 NE 0]                        ; skip if spindle was empty
-  o110 if [#4901 GE 1]                      ; outgoing tool came from carousel
-    (print, ATC: returning T[#4900] to carousel pocket [#4901])
-    G65 P391                                ; tcreturn — #4900=tool_id, #4901=pocket
-  o110 else                                 ; outgoing tool was hand-loaded
-    (print, ATC: remove hand-loaded T[#4900] and press cycle start)
-    G65 P393                                ; handreturn — M0 pause
-  o110 endif
-o100 endif
+o10 if [#4904 EQ 1]
+  (print, ATC: tc.macro called for M61 -- skipping)
+o10 else
 
-; ── Step 2: Fetch incoming tool ──────────────────────────────────────────────
-o120 if [#4902 EQ 0]                        ; T0 — empty spindle requested
-  (print, ATC: T0 requested -- spindle will be empty)
-o120 elseif [#4903 GE 1]                    ; incoming tool is in carousel
-  (print, ATC: fetching T[#4902] from carousel pocket [#4903])
-  #4900 = #4902                             ; set fetch parameters
-  #4901 = #4903
-  G65 P390                                  ; tcfetch — #4900=tool_id, #4901=pocket
-o120 else                                   ; incoming tool is hand-loaded
-  (print, ATC: install T[#4902] manually and press cycle start)
-  G65 P392                                  ; handfetch — M0 pause
-  G65 P394                                  ; measure — skips if already measured
-o120 endif
+  (print, ATC: tool change T[#4900] -> T[#4902])
+  (print, ATC: outgoing pocket=[#4901] incoming pocket=[#4903])
 
-; ── Step 3: Update current tool ──────────────────────────────────────────────
-; M61 fires gc_tool_changed() which calls grbl.on_tool_changed,
-; updating tooltable.c pocket assignments and last_fetched_pocket.
-M61 Q#4902
+  ; ── Step 1: Return outgoing tool ───────────────────────────────────────────
+  o100 if [#4900 NE 0]                        ; skip if spindle was empty
+    o110 if [#4901 GE 1]                      ; outgoing tool came from carousel
+      (print, ATC: returning T[#4900] to carousel pocket [#4901])
+      G65 P391                                ; tcreturn — #4900=tool_id, #4901=pocket
+    o110 else                                 ; outgoing tool was hand-loaded
+      (print, ATC: remove hand-loaded T[#4900] and press cycle start)
+      G65 P393                                ; handreturn — M0 pause
+    o110 endif
+  o100 endif
 
-(print, ATC: tool change complete -- T[#4902] active)
+  ; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
+  o120 if [#4902 EQ 0]                        ; T0 — empty spindle requested
+    (print, ATC: T0 requested -- spindle will be empty)
+  o120 elseif [#4903 GE 1]                    ; incoming tool is in carousel
+    (print, ATC: fetching T[#4902] from carousel pocket [#4903])
+    #4900 = #4902                             ; set fetch parameters
+    #4901 = #4903
+    G65 P390                                  ; tcfetch — #4900=tool_id, #4901=pocket
+  o120 else                                   ; incoming tool is hand-loaded
+    (print, ATC: install T[#4902] manually and press cycle start)
+    G65 P392                                  ; handfetch — M0 pause
+    G65 P394                                  ; measure — skips if already measured
+  o120 endif
 
-M2
+  ; ── Step 3: Update current tool ────────────────────────────────────────────
+  ; M61 fires gc_tool_changed() which calls grbl.on_tool_changed,
+  ; updating tooltable.c pocket assignments and last_fetched_pocket.
+  #4904 = 1 ; clear Txx flag before M61
+  M61 Q#4902
+
+  (print, ATC: tool change complete -- T[#4902] active)
+
+o10 endif
+
+M99

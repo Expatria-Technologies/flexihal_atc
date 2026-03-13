@@ -1,20 +1,16 @@
-; ATC_MACRO_ID_HANDFETCH    392 //manual tool fetch (raise Z, optional go to G30, then return from macro and trap cycle start.  Update tool number after cycle start)
+; ATC_MACRO_ID_HANDFETCH    392 //manual tool fetch (raise Z, go to G30, pause for operator to install tool)
 ;
-; Called after the outgoing tool has been returned (if applicable)
-; and before the operator pause.  The ATC plugin has already reported the
-; incoming tool name/comment to the stream if one exists in the tool table.
+; Called after the outgoing tool has been returned (if applicable).
+; Pauses for the operator to install the incoming hand-loaded tool.
 ;
-; Parameters set by plugin before this macro runs:
-;   #4900 = incoming tool number
-;   #4902 = outgoing carousel pocket (0 if outgoing tool was not in carousel)
+; Parameters:
+;   #4902 = incoming tool number
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
-; G30 (second home position) is used as the manual tool change position.
 G53 G0 Z0
 G30
 
 ; ── Notify operator ───────────────────────────────────────────────────────────
-; Add any additional signalling here (lights, buzzers, etc.)
-(MSG, Load tool #4900 and press cycle start)
+(print, ATC: install tool #4902 and press cycle start)
 M0
-M2
+M99

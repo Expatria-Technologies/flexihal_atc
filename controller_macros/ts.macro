@@ -1,16 +1,21 @@
 ; ts.macro — Tool select notification for FlexiHAL ATC
 ;
 ; Called by grblHAL on Txx before tc.macro runs on M6.
-; Parameters are set by tooltable.c onToolSelect:
+; Also fired (incorrectly) by macros.c on M61 -- guarded by #4904.
+;
+; Parameters set by tooltable.c onToolSelect:
 ;   #4902 = incoming tool ID
 ;   #4903 = incoming pocket (-1 if hand-loaded or not in carousel)
+;   #4904 = 0 if called from a real Txx, 1 if called from M61
 
-o100 if [#4902 EQ 0]
-  (print, ATC: T0 selected -- spindle will be empty after M6)
-o100 elseif [#4903 GE 1]
-  (print, ATC: T[#4902] selected -- in carousel pocket [#4903])
+o100 if [#4904 EQ 0]
+  o110 if [#4903 GE 1]
+    (print, ATC: T[#4902] selected -- in carousel pocket [#4903])
+  o110 else
+    (print, ATC: T[#4902] selected -- hand-loaded)
+  o110 endif
 o100 else
-  (print, ATC: T[#4902] selected -- hand-loaded)
+  (print, ATC: ts.macro skipping -- not a real tool selection)
 o100 endif
+M99
 
-M2

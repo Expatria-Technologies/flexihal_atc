@@ -8,16 +8,41 @@ If `TOOLTABLE_ENABLE` is not set to `2`, only the spindle interlock and drawbar 
 
 ## Features
 
-- Automatic carousel tool change via NGC macros
+- Automatic carousel tool change via NGC macros (`tc.macro`)
 - Integrated tool length measurement against a fixed toolsetter at G59.3
 - Random-pocket carousel support via a persistent tooltable in LinuxCNC format
 - Manual tool swap support with automatic return of outgoing carousel tools
-- Operator pause with tool name notification when a hand-loaded tool is required
+- Operator pause (M0) when a hand-loaded tool is required
 - Drawbar open/close control with spindle interlock
 - Automatic spindle and coolant stop at the start of every M6, with restore on completion
 - Drawbar button polling — hold to open, release to close — works in both `IDLE` and `TOOL_CHANGE` states
-- Optional `atc_pause.ngc` hook for operator notification (lights, buzzers, messages)
-- Automatic creation of tooltable directory and file on first mount
+- Pocket assignment tracking — tooltable always reflects physical carousel state
+
+## Architecture
+
+The tool change sequence is driven by grblHAL's built-in `tc.macro` mechanism. When M6 is parsed, `tooltable.c` sets NGC parameters describing the outgoing and incoming tools, then grblHAL launches `tc.macro` which orchestrates the physical motion via subroutine macros. The C plugin handles only hardware I/O (drawbar, sensors, spindle interlock) and carousel administration commands.
+
+### Tool Change Parameter Handoff
+
+`tooltable.c` hooks `hal.tool.select` and sets the following NGC parameters on every `Txx` command, before `tc.macro` runs:
+
+| Parameter | Description |
+|-----------|-------------|
+| `#4900` | Outgoing tool ID (0 if spindle was empty) |
+| `#4901` | Outgoing tool carousel pocket (-1 if hand-loaded or unknown after power cycle) |
+| `#4902` | Incoming tool ID (0 = T0) |
+| `#4903` | Incoming tool carousel pocket (-1 if hand-loaded) |
+
+`tc.macro` reads these parameters and calls the appropriate subroutine macros. At the end of `tc.macro`, `M61 Q#4902` updates the current tool in grblHAL, which triggers `onToolChanged` in `tooltable.c` to update pocket assignments in the tooltable file.
+
+### Pocket Tracking
+
+The tooltable stores the physical state of the carousel — `P0` means the tool is not in the carousel (hand-loaded or in the spindle), `Pn` means the tool is physically in pocket `n`. The tooltable is updated immediately when tools move:
+
+- When a carousel tool is fetched (`P390.macro` completes) → pocket cleared to P0
+- When a carousel tool is returned (`P391.macro` completes) → pocket restored via `tooltable_carousel_add()`
+
+`last_fetched_pocket` is a volatile (RAM-only) variable that remembers which pocket the current spindle tool came from, so it can be returned there on the next tool change. This value is lost on power cycle — the operator can use `$TCRETURN` or `$TCADD` to re-establish the carousel state.
 
 ## Commands
 
@@ -38,9 +63,9 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCADD [;name]` or `$TCADD Tn [;name]` | Deposit the current spindle tool into the next free carousel pocket and register it in the tooltable. If no tool number is given, uses the tool currently loaded (`gc_state.tool`). Reports an error if the tool is already in the carousel or tooltable. Runs `atc_return.ngc` to physically move the tool into position. If the deposit motion fails, the pocket assignment is rolled back. Machine must be homed. |
-| `$TCRETURN` | Return the current spindle tool to its carousel pocket and clear the spindle to T0. The tool must have a pocket assigned. Spindle must be off. Machine must be homed. |
-| `$TCRM [Tn]` | Clear a carousel pocket assignment, moving the tool to P0. The tool must currently have a pocket assigned (P > 0) — P0 tools are rejected. This is a purely administrative operation; the operator is responsible for physically removing the tool from the pocket first. If no tool number is given, uses the tool currently in the spindle. |
+| `$TCADD [Tn] [;name]` | Deposit the current spindle tool (or specified tool) into the next free carousel pocket and register it in the tooltable. Runs `P391.macro` to physically move the tool. If the deposit motion fails to start, the pocket assignment is rolled back. Machine must be homed and IDLE. |
+| `$TCRETURN` | Return the current spindle tool to its carousel pocket using `last_fetched_pocket`. Requires the tool to have been fetched from the carousel since the last power cycle. Machine must be homed and IDLE. Spindle must be off. |
+| `$TCRM [Tn]` | Clear a carousel pocket assignment, moving the tool to P0. Administrative only — does not move the machine. The operator is responsible for physically removing the tool first. |
 
 ### Tool Measurement
 
@@ -48,7 +73,7 @@ These commands require `TOOLTABLE_ENABLE=2`.
 
 | Command | Description |
 |---------|-------------|
-| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter, store the measured gauge length in the tool table via `G10 L11`, and activate the offset via `G43`. Skips measurement if a valid offset is already stored. Called automatically at the end of every carousel tool change macro. |
+| `$TCMEASURE` | Probe the current tool against the G59.3 toolsetter, store the measured gauge length via `G10 L11`, and activate the offset via `G43`. Skips measurement if a valid offset is already stored. Runs `P394.macro`. Machine must be homed and IDLE. |
 | `$TCREMEASURE` | Clear the stored offset for the current tool and re-probe unconditionally. Use after physically replacing a tool in the spindle. |
 
 ### Tooltable
@@ -58,59 +83,65 @@ These commands require `TOOLTABLE_ENABLE=2`.
 | Command | Description |
 |---------|-------------|
 | `$TTLOAD` | Reload the tool table from disk. |
-| `$TTLIST` | Print all entries in the tool table to the console, read directly from `/linuxcnc/tooltable.tbl`. |
-| `$TTINDEX` | Print the in-RAM pocket index to the console. Shows each tool's assigned pocket slot as currently held in memory. Useful for debugging carousel registration. |
-| `$TTREG Tn [;name]` | Register a tool in the tooltable, or update its name if already registered. Creates a new P0 entry if the tool is not yet in the tooltable. If the tool already exists (at P0 or in a pocket), updates the name if one is given and leaves the pocket assignment unchanged. A tool number is always required. |
-| `$TTDEL Tn` | Delete a tool entry from the tooltable entirely, removing the file entry and stored offsets. Only tools at P0 may be deleted — use `$TCRM` first if the tool is in a pocket. A tool number is always required. |
+| `$TTLIST` | Print all entries in the tool table to the console. |
+| `$TTINDEX` | Print the in-RAM pocket index to the console. Shows each tool's assigned pocket as currently held in memory. Useful for debugging carousel registration. |
+| `$TTREG Tn [;name]` | Register a tool in the tooltable at P0, or update its name if already registered. |
+| `$TTDEL Tn` | Delete a P0 tool entry from the tooltable entirely. Use `$TCRM` first if the tool is in a pocket. |
 
 ## NGC Macro Files
 
-The following macro files must be present on the filesystem when `TOOLTABLE_ENABLE=2`:
+The following macro files must be present on the filesystem when `TOOLTABLE_ENABLE=2`. All macros use the grblHAL `P<n>.macro` naming convention and are located in the VFS root or littlefs.
 
-| File | Location | Purpose |
-|------|----------|---------|
-| `atc_change.ngc` | `/linuxcnc/` | Full carousel swap — returns outgoing tool if applicable, picks up incoming tool, then calls `$TCMEASURE` to measure |
-| `atc_return.ngc` | `/linuxcnc/` | Returns current tool to its carousel pocket (used when incoming tool is not in carousel, and by `$TCADD`/`$TCRETURN`) |
-| `atc_measure.ngc` | `/linuxcnc/` | Tool length measurement — cancels active TLO, probes against G59.3 toolsetter, stores gauge length via `G10 L11`, activates offset via `G43`. Reads feed rates and probing distance from `$342`–`$345` via `PRM[]` |
-| `P200.macro` | SD card macro path | Geometry configuration — sets `#4920`–`#4932`. Called via `G65 P200` from startup block |
+| File | Purpose |
+|------|---------|
+| `tc.macro` | Top-level tool change orchestrator. Reads `#4900`–`#4903` and calls appropriate subroutines. Must end with `M61 Q#4902` to update the current tool. |
+| `ts.macro` | Tool select notification. Runs on `Txx`. Prints the incoming tool number and whether it is in the carousel or hand-loaded. |
+| `P390.macro` | Fetch a tool from the carousel. Parameters: `#4900`=tool_id, `#4901`=pocket. |
+| `P391.macro` | Return a tool to the carousel. Parameters: `#4900`=tool_id, `#4901`=pocket. Also used by `$TCADD` and `$TCRETURN`. |
+| `P392.macro` | Hand fetch — M0 pause prompting operator to install a hand-loaded tool. |
+| `P393.macro` | Hand return — M0 pause prompting operator to remove a hand-loaded tool. |
+| `P394.macro` | Measure tool length. Skips if tool already has a non-zero Z offset stored. Handles T0 gracefully. |
 
-The following file is **optional**:
+### tc.macro Flow
 
-| File | Location | Purpose |
-|------|----------|---------|
-| `atc_pause.ngc` | `/linuxcnc/` | Operator notification hook — runs after the machine arrives at the change position, before the `STATE_TOOL_CHANGE` pause. Use for lights, buzzers, or display messages. If absent, it is silently skipped. |
+```
+tc.macro
+  ├─ outgoing tool exists (#4900 NE 0)
+  │    ├─ outgoing in carousel (#4901 GE 1) → G65 P391 (return)
+  │    └─ outgoing hand-loaded             → G65 P393 (M0 pause, operator removes)
+  │
+  ├─ incoming tool (#4902)
+  │    ├─ T0                               → skip fetch, spindle empty
+  │    ├─ incoming in carousel (#4903 GE 1) → G65 P390 (fetch)
+  │    └─ incoming hand-loaded             → G65 P392 (M0 pause, operator installs)
+  │                                           G65 P394 (measure)
+  │
+  └─ M61 Q#4902  → updates current tool, triggers tooltable pocket update
+```
 
-If any required macro file is missing, M6 will report a warning and abort rather than leaving the machine in an undefined state.
+### ts.macro
 
-> **Note:** Do not add `$TCMEASURE` to `atc_pause.ngc`. Measurement is handled automatically by the plugin after the operator presses cycle start.
+Runs on every `Txx` command. Prints the selected tool and its carousel status so the operator knows what to expect before M6.
 
-### Tool Length Offsets
+### Tool Length Measurement (P394.macro)
 
-Tool length offsets are stored as absolute gauge lengths in the tool table via `G10 L11`, using G59.3 as the fixture reference. This means:
+Tool length offsets are stored as absolute gauge lengths via `G10 L11` using G59.3 as the fixture reference:
 
-- Each tool's length is persistent across power cycles — no re-probing is needed unless the tool is physically replaced
-- There is no reference tool requirement; all tools are measured on the same absolute scale
-- `G43` (activated automatically after each probe) loads the stored offset from the table for the current tool
+- Offsets are persistent across power cycles — no re-probing unless the tool is physically replaced
+- No reference tool required — all tools are on the same absolute scale
+- `G43` is activated automatically after each probe
 
-The toolsetter position (G59.3 X, Y, Z) must be configured accurately. G59.3 Z should be set to the toolsetter approach height — just above the trigger point. The probe sequence reads `$342`–`$345` for distances and feed rates.
+The toolsetter position must be configured in G59.3 (X, Y, Z). The probe sequence reads feed rates and probing distance from settings `$342`–`$345` via `PRM[]`.
 
-### Parameters Set by Plugin
-
-The plugin sets the following numbered NGC parameters before starting a macro:
-
-| Parameter | Description |
-|-----------|-------------|
-| `#4900` | Incoming tool number |
-| `#4901` | Incoming tool carousel pocket number |
-| `#4902` | Outgoing tool carousel pocket (0 if outgoing tool was hand-loaded) |
+Measurement is skipped if the tool already has a non-zero Z offset. Use `$TCREMEASURE` to force re-measurement.
 
 ### Machine Geometry Parameters
 
-Tool change motion follows the **four-position model**, matching the OpenPnP "Four Positions" changer style. Each deposit or pickup moves through four explicit waypoints. Unload executes the same positions in reverse. Parameters are set once by running `G65 P200` from a startup macro.
+Tool change motion follows the **four-position model**. Each deposit or pickup moves through four explicit waypoints. Parameters are set once via a startup macro (e.g. `$N0=G65P200`).
 
 | Parameter | Description |
 |-----------|-------------|
-| `#4920` | Position 1 (Safe) X — clearance position (machine coords) |
+| `#4920` | Position 1 (Safe) X |
 | `#4921` | Position 1 (Safe) Y |
 | `#4922` | Position 1 (Safe) Z — typically Z0 |
 | `#4923` | Position 2 (Approach) X |
@@ -124,107 +155,74 @@ Tool change motion follows the **four-position model**, matching the OpenPnP "Fo
 | `#4931` | Position 4 (Exit) Z — spindle clear of pocket |
 | `#4932` | Feed rate for all carousel positioning moves (mm/min) |
 
-Pocket positioning (rotating the carousel to the correct pocket) is handled externally — either by a dedicated axis (A/B) or a separate MCU. The pocket number is available in the macro as `#4901` (incoming) and `#4902` (outgoing). Add the appropriate motion or M-code in the marked sections of `atc_change.ngc` and `atc_return.ngc`.
-
-### Running P200.macro
-
-The geometry configuration file is named `P200.macro` so it can be called directly by grblHAL's `G65` mechanism. Copy it to the SD card and call it from the MDI or assign it to a startup block:
-
-```gcode
-G65 P200
-```
-
-To run it automatically on every boot:
-
-```
-$N0=G65P200
-```
-
-This ensures geometry parameters are always set after a reset or power cycle. Edit the parameter values in `P200.macro` to match your machine before first use.
+Pocket positioning (rotating the carousel to the correct pocket) is handled externally — either by a dedicated axis or a separate MCU. The pocket number is available as `#4901` (outgoing) and `#4903` (incoming) in `tc.macro`, and as `#4901` in `P390.macro` and `P391.macro`.
 
 ## Tool Change Behaviour (M6)
 
-At the start of every M6 the plugin automatically stops the spindle and coolant. Both are restored to their pre-M6 state when the tool change completes.
+At the start of every M6 the plugin automatically stops the spindle and coolant. Both are restored to their pre-M6 state when `M61` fires at the end of `tc.macro`.
 
 M6 behaviour depends on the carousel status of both the outgoing and incoming tools:
 
-### Outgoing from carousel → Incoming from carousel
-`atc_change.ngc` runs. The outgoing tool is returned to its pocket, the incoming tool is picked up, and `atc_measure.ngc` is called to probe the new tool, store its gauge length in the tool table, and activate the offset.
+### Outgoing in carousel → Incoming in carousel
+`P391.macro` returns the outgoing tool, `P390.macro` fetches the incoming tool. No operator involvement required.
 
-### Outgoing hand-loaded (P0) → Incoming from carousel
-The machine moves to home Z, optionally moves to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to **remove** the hand-loaded tool and press cycle start. Once resumed, `atc_change.ngc` runs to pick up the carousel tool and measure it.
+### Outgoing in carousel → Incoming hand-loaded
+`P391.macro` returns the outgoing tool. `P392.macro` pauses (M0) for the operator to install the hand-loaded tool. `P394.macro` measures the new tool.
 
-### Outgoing from carousel → Incoming hand-loaded (P0)
-`atc_return.ngc` runs first to return the outgoing tool to its carousel pocket. The machine then moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to **load** the new tool and press cycle start. Once resumed, `atc_measure.ngc` probes the new tool, stores its gauge length, and activates the offset.
+### Outgoing hand-loaded → Incoming in carousel
+`P393.macro` pauses (M0) for the operator to remove the hand-loaded tool. `P390.macro` fetches the incoming carousel tool.
 
-### Outgoing hand-loaded (P0) → Incoming hand-loaded (P0)
-The machine moves to home Z, optionally to G30, and runs `atc_pause.ngc` (if present). The plugin enters `STATE_TOOL_CHANGE` and waits for the operator to swap the tool and press cycle start. Once resumed, `atc_measure.ngc` probes the new tool, stores its gauge length, and activates the offset.
+### Outgoing hand-loaded → Incoming hand-loaded
+`P393.macro` pauses (M0) for the operator to remove the outgoing tool. `P392.macro` pauses (M0) for the operator to install the incoming tool. `P394.macro` measures the new tool.
 
-### Tooltable updates after M6
+### Tooltable Updates After M6
 
-After M6 completes the tooltable is updated to reflect the new physical state: the incoming tool's pocket is cleared to P0 (it is now in the spindle, not the carousel). If the outgoing tool originally came from the carousel, its pocket assignment is also restored to its original slot. If the outgoing tool was hand-loaded (P0), its tooltable entry is left unchanged.
+When `M61 Q#4902` fires at the end of `tc.macro`, `onToolChanged` in `tooltable.c` updates the tooltable:
 
-### Tool Name Notification
-
-If the incoming tool has a name or comment in the tool table, the plugin reports it to the sender before the operator pause — for example:
-
-```
-Load T5 (12mm EM) and press cycle start
-```
-
-This message is sent regardless of whether `atc_pause.ngc` is present.
+- Incoming tool's pocket is cleared to P0 (it is now in the spindle)
+- If the outgoing tool came from the carousel, its pocket assignment is restored via `tooltable_carousel_add()`
+- `last_fetched_pocket` is updated for the next tool change
 
 ## Loading a New Tool into the Carousel
 
 To load a new tool into the carousel for the first time:
 
-1. Issue a manual tool change to get the tool into the spindle and measured:
-
+1. Get the tool into the spindle and measured:
 ```gcode
-T5 M6       ; machine moves to G30, operator loads T5, machine measures it
+T5 M6       ; operator installs T5 manually, machine measures it
 ```
 
-2. Once the tool is measured and the spindle is idle, deposit it into the carousel:
-
+2. Deposit into the carousel:
 ```gcode
-$TCADD      ; uses current spindle tool (T5) — deposits into next free pocket
+$TCADD      ; deposits current spindle tool into next free pocket
+$TCADD ;12mm EM   ; as above, with a name
 ```
 
-After `$TCADD` the spindle is empty. Load the next tool manually or issue another M6.
+After `$TCADD` the spindle is empty. `$TCADD` performs the physical deposit via `P391.macro` and writes the pocket assignment to the tooltable. If the deposit motion fails to start, the pocket assignment is rolled back automatically.
 
-`$TCADD` performs the physical deposit motion via `atc_return.ngc` and writes the pocket assignment to the tooltable. If the deposit motion fails for any reason, the pocket assignment is rolled back automatically so the tooltable stays consistent.
-
-An optional name can be supplied:
-
+To register a hand-loaded tool without assigning a pocket (offsets preserved, not in carousel):
 ```gcode
-$TCADD ;12mm EM
-```
-
-To register a tool in the tooltable without assigning it a carousel pocket (i.e. a hand-loaded tool you want offsets preserved for):
-
-```gcode
-$TTREG T7 ;6mm ballnose   ; add tool 7 to the tooltable as P0
+$TTREG T7 ;6mm ballnose
 ```
 
 ## Tool Table
 
-The tool table is stored at `/linuxcnc/tooltable.tbl` in LinuxCNC format. The directory and file are created automatically on first mount if they do not exist.
+The tool table is stored at `/tooltable.tbl` in LinuxCNC format. The file is created automatically on first mount if it does not exist.
 
 ```
 P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]
 ```
 
-- `P1` and above — tool is assigned to that carousel pocket
+- `P1` and above — tool is physically in that carousel pocket
 - `P0` — tool is known (offsets preserved) but not currently in the carousel
 
 ## Safety
 
-- M6 aborts with an error if any required NGC macro file is missing
-- Spindle and coolant are always stopped before any tool change motion and restored after
-- The operator is always paused and prompted before the carousel picks a tool if the spindle is not empty
+- Spindle and coolant are always stopped before any tool change motion
+- The spindle cannot be started while the drawbar is open or no tool is detected
 - `$TCADD` checks for a tool-present sensor (if configured) before registering
-- The tooltable state is reset on any macro error so pocket assignments are not corrupted on failure
-- A soft reset during a tool change cleans up all macro state
+- `$TCADD` rolls back the pocket assignment if the deposit macro fails to start
+- A soft reset during a tool change cleans up all macro state via grblHAL's reset chain
 
 ## Settings
 

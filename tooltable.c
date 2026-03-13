@@ -374,7 +374,7 @@ typedef struct {
     bool        delete_entry;                              // if true, omit this tool from rewritten file
 } pocket_override_t;
 
-static char filename_tmp[] = "/linuxcnc/tooltable.tmp";
+static char filename_tmp[] = "/tooltable.tmp";
 
 static bool rewrite_file (const pocket_override_t *overrides, uint8_t n_overrides)
 {
@@ -494,6 +494,7 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
 {
     static tool_table_entry_t tool = {0};
     static tool_scan_result_t scanned = {0};
+    static tool_data_t unknown_tool = {0};
 
     tool = (tool_table_entry_t){0};  // reset on every call — no stale data
 
@@ -531,13 +532,15 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
     }
     vfs_close(file);
 
-    // Not found in file — return pocket0 so grblHAL never sees NULL data
-    // on an empty table. Callers that need to distinguish "not in carousel"
-    // should check pocket_id, not data.
     if(!tool.data) {
-        tool.data   = &pocket0.tool;
-        tool.pocket = pocket0.pocket_id;
-        tool.name   = pocket0.name;
+        // Unknown tool — auto-register as P0 with no offsets
+        tooltable_register_tool(tool_id, NULL);
+
+        unknown_tool = (tool_data_t){0};
+        unknown_tool.tool_id = tool_id;
+        tool.data   = &unknown_tool;
+        tool.pocket = 0;
+        tool.name   = NULL;
     }
 
     return &tool;
@@ -744,7 +747,7 @@ carousel_op_result_t tooltable_carousel_remove (tool_id_t tool_id)
     if(!ie || ie->pocket_id < 1)
         return CarouselOp_ToolNotFound;
 
-    pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = -1 };
+    pocket_override_t ov = { .tool_id = tool_id, .new_pocket_id = 0 };
     if(!rewrite_file(&ov, 1))
         return CarouselOp_WriteError;
 
@@ -783,10 +786,10 @@ carousel_op_result_t tooltable_delete (tool_id_t tool_id)
 static void onToolChanged (tool_data_t *tool)
 {
     // Ensure incoming tool has a table entry
-    if(fs_available && index_find(tool->tool_id) == NULL) {
+    if(fs_available && tool->tool_id > 0 && index_find(tool->tool_id) == NULL) {
         tool_pocket_t blank = {0};
         blank.tool.tool_id = tool->tool_id;
-        blank.pocket_id    = -1;
+        blank.pocket_id    = 0;
         append_tool(&blank);
     }
 
@@ -814,8 +817,15 @@ static void onToolChanged (tool_data_t *tool)
 
 static void onToolSelect (tool_data_t *tool, bool next)
 {
-    if(!next)
+    
+    char buf[128];
+    sprintf(buf, "[onToolSelect: %u tool_id, next %d]" ASCII_EOL, tool->tool_id, next);
+    hal.stream.write(buf);
+    
+    if(!next){
         current_tool = tool->tool_id;
+        ngc_param_set(4904, 1.0f);      // M61 signal: not a real Txx
+    }
 
     if(next && max_pockets > 0) {
         // Use grblHAL's current tool data directly — reliable on boot
@@ -830,6 +840,7 @@ static void onToolSelect (tool_data_t *tool, bool next)
         ngc_param_set(4901, (float)last_fetched_pocket);
         ngc_param_set(4902, (float)tool->tool_id);
         ngc_param_set(4903, (float)incoming_pocket);
+        ngc_param_set(4904, 0.0f);      // signal: real Txx pre-selection
     }
 
     if(tool_select)
@@ -1140,9 +1151,6 @@ void tooltable_init (void)
 
     on_tool_changed = grbl.on_tool_changed;
     grbl.on_tool_changed = onToolChanged;
-
-    on_macro_return = grbl.on_macro_return;
-    grbl.on_macro_return = onMacroReturn;
 
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
