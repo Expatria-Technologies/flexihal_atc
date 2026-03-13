@@ -819,7 +819,8 @@ static void onToolSelect (tool_data_t *tool, bool next)
 {
     
     char buf[128];
-    sprintf(buf, "[onToolSelect: %u tool_id, next %d]" ASCII_EOL, tool->tool_id, next);
+    sprintf(buf, "[onToolSelect: tool_id=%u next=%d current_tool=%u gc_state.tool=%u]" ASCII_EOL,
+    tool->tool_id, next, current_tool, gc_state.tool ? gc_state.tool->tool_id : 0);
     hal.stream.write(buf);
     
     if(!next){

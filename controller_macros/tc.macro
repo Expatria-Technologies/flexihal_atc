@@ -43,7 +43,7 @@ o10 else
     o110 endif
   o100 endif
 
-  ; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
+; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
   o120 if [#4902 EQ 0]                        ; T0 — empty spindle requested
     (print, ATC: T0 requested -- spindle will be empty)
   o120 elseif [#4903 GE 1]                    ; incoming tool is in carousel
@@ -54,14 +54,21 @@ o10 else
   o120 else                                   ; incoming tool is hand-loaded
     (print, ATC: install T[#4902] manually and press cycle start)
     G65 P392                                  ; handfetch — M0 pause
-    G65 P394                                  ; measure — skips if already measured
   o120 endif
+
+  ; ── Step 2b: Measure incoming tool (skips T0 and already-measured tools) ───
+  o125 if [#4902 NE 0]
+    G65 P394
+  o125 endif
 
   ; ── Step 3: Update current tool ────────────────────────────────────────────
   ; M61 fires gc_tool_changed() which calls grbl.on_tool_changed,
   ; updating tooltable.c pocket assignments and last_fetched_pocket.
-  #4904 = 1 ; clear Txx flag before M61
+(print, ATC: after P390 -- #4902=#4902 #4903=#4903)  
+  #4904 = 1 ; set Txx flag before M61
+  (print, ATC: about to M61 Q#4902)
   M61 Q#4902
+(print, ATC: after M61 -- #4902=#4902 #4903=#4903)  
 
   (print, ATC: tool change complete -- T[#4902] active)
 
