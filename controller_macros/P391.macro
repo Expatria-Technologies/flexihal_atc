@@ -1,13 +1,10 @@
-; atc_return.ngc — Return current spindle tool to its carousel pocket
+; ATC_MACRO_ID_TCRETURN  391 //return to tool carousel (OpenPnP four-positions style)
 ;
-; Called by flexihal_atc.c in three situations:
-;   1. tool_change() — outgoing tool is in the carousel, incoming is hand-loaded
-;   2. $TCADD        — deposit a new tool into its assigned pocket
-;   3. $TCRETURN     — return current spindle tool and clear spindle to T0
+; Called by flexihal_atc.c tool_change() when the requested tool is deposited to the
+; carousel.  Parameters set by the plugin before this macro runs:
 ;
-; Parameter set by plugin before this macro runs:
-;
-;   #4902 = carousel pocket number to return to
+;   #4900 = tool number
+;   #4901 = carousel pocket number
 ;
 ; Geometry parameters — set once by G65 P200 in your startup macro:
 ;
@@ -18,32 +15,43 @@
 ;   #4932        Feed rate for all carousel positioning moves (mm/min)
 ;
 ; Pocket positioning is handled externally (dedicated axis or separate MCU).
-; Add the appropriate motion or M-code in the marked section below.
+; Add the appropriate motion or M-code in the marked sections below.
 ;
-; Unload sequence: P1 → P2 → P3 [open drawbar] → P4
+; Unload sequence:  P1 → P2 → P3 [open drawbar]  → P4 [close drawbar]
 
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
-G65P201
+
+;wait for idle state/check for alarm.
+;G65P201
+
 G53 G0 Z#4922
 G53 G0 X#4920 Y#4921
 
-; ── [CAROUSEL POSITIONING] ───────────────────────────────────────────────────
-; Position the carousel to pocket #4902 here.
-; Example: G0 A[#4902 * 18.0]   (if A axis drives the carousel)
-;          or issue an M-code to the carousel MCU
-  G65 P7 S3 F16 R1 A1#4902
-  G65 P201
+; ── [CAROUSEL POSITIONING — outgoing tool] ───────────────────────────────
+; Position the carousel to pocket #4901 here.
+; Example: G0 A[#4901 * 18.0]   (if A axis drives the carousel)
+;          or issue a macro code to the carousel MCU (implmented here)
+;G65 P7 S3 F16 R1 A1#4901
 
-; ── Approach pocket (P2) ─────────────────────────────────────────────────────
+;wait for idle state/check for alarm.
+;G65P201
+
+; Approach outgoing pocket (P2)
 G53 G1 X#4923 Y#4924 F#4932
 G53 G1 Z#4925 F#4932
 
-; ── Engage pocket (P3) — deposit tool, open drawbar ──────────────────────────
+; Engage outgoing pocket (P3) — deposit tool, open drawbar
 G53 G1 X#4926 Y#4927 Z#4928 F#4932
 $DRBO
 G4 P0.5
 
-; ── Exit pocket (P4) ─────────────────────────────────────────────────────────
+; Exit outgoing pocket (P4)
 G53 G1 X#4929 Y#4930 Z#4931 F#4932
+
+$DRBC
+G4 P0.5
+
+; Withdraw from pocket (P4 → P1)
+G53 G0 X#4920 Y#4921 Z#4922 F#4932
 
 M2

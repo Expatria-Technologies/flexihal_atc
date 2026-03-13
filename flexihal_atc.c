@@ -186,8 +186,10 @@ typedef enum {
 } tc_state_t;
 
 static tc_state_t   tc_state           = TC_IDLE;
-static pocket_id_t  tc_incoming_pocket = -1;   // carousel pocket of incoming tool (-1 = not in carousel)
-static pocket_id_t  tc_outgoing_pocket = -1;   // carousel pocket of outgoing tool (-1 = not in carousel)
+static pocket_id_t tc_incoming_pocket  = -1;  // carousel pocket of incoming tool
+static pocket_id_t tc_outgoing_pocket  = -1;  // carousel pocket outgoing tool will return to
+static pocket_id_t last_fetched_pocket = -1;  // pocket the current spindle tool came from (volatile, lost on power cycle)
+static tool_id_t tc_outgoing_tool_id = 0;  // tool ID of outgoing tool, saved at TC_START
 
 #endif
 
@@ -409,16 +411,6 @@ ISR_CODE static bool ISR_FUNC(trap_stream_cycle_start)(uint8_t c)
     spin_lock--;
 
     return drop;
-}
-
-// Install the cycle-start trap when the sender acknowledges the tool change.
-// Registered as grbl.on_toolchange_ack in atc_settings_load().
-ISR_CODE static void ISR_FUNC(on_toolchange_ack)(void)
-{
-    execute_posted = false;
-    control_interrupt_callback = hal.control.interrupt_callback;
-    hal.control.interrupt_callback = trap_control_cycle_start;
-    enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
 }
 
 #endif // TOOLTABLE_ENABLE == 2
@@ -791,7 +783,6 @@ static status_code_t atc_tc_advance (void)
             if(status != Status_Handled) {
                 change_completed();
                 tc_state = TC_IDLE;
-                tooltable_set_m6_prev(-1);
                 return status == Status_OK ? Status_FileOpenFailed : status;
             }
             break;
@@ -800,12 +791,28 @@ static status_code_t atc_tc_advance (void)
         case TC_RETURN_OUTGOING:
         case TC_HAND_RETURN: {
             bool trap_installed = (tc_state == TC_HAND_RETURN);
+            // Outgoing tool is now physically back in the carousel — restore its pocket
+            if(tc_outgoing_pocket >= 1) {
+                pocket_id_t restored_pocket;
+                tooltable_carousel_add(tc_outgoing_tool_id, atc.number_of_pockets, NULL, &restored_pocket);
+            }
             if(tc_incoming_pocket >= 1) {
+                // Remove incoming tool from tooltable — pocket is now physically empty
+                tooltable_carousel_remove(next_tool->tool_id);
+                last_fetched_pocket = -1;  // outgoing tool returned, no longer tracked
                 tc_state = TC_FETCH_INCOMING;
                 ngc_param_set(4900, (float)next_tool->tool_id);
                 ngc_param_set(4901, (float)tc_incoming_pocket);
                 status = grbl.on_macro_execute(ATC_MACRO_ID_TCFETCH, (parameter_words_t){0}, 1);
+                if(status != Status_Handled) {
+                    // Roll back — tool didn't move, restore its pocket
+                    tooltable_carousel_add(next_tool->tool_id, atc.number_of_pockets, NULL, &tc_incoming_pocket);
+                    change_completed();
+                    tc_state = TC_IDLE;
+                    return status == Status_OK ? Status_FileOpenFailed : status;
+                }
             } else {
+                last_fetched_pocket = -1;  // outgoing tool returned, no longer tracked
                 tc_state = TC_HAND_FETCH;
                 if(!trap_installed) {
                     execute_posted = false;
@@ -814,23 +821,24 @@ static status_code_t atc_tc_advance (void)
                     enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
                 }
                 status = grbl.on_macro_execute(ATC_MACRO_ID_HANDFETCH, (parameter_words_t){0}, 1);
-            }
-            if(status != Status_Handled) {
-                change_completed();
-                tc_state = TC_IDLE;
-                tooltable_set_m6_prev(-1);
-                return status == Status_OK ? Status_FileOpenFailed : status;
+                if(status != Status_Handled) {
+                    change_completed();
+                    tc_state = TC_IDLE;
+                    return status == Status_OK ? Status_FileOpenFailed : status;
+                }
             }
             break;
         }
 
-        // ── TCFETCH complete → no measure needed, sequence done ───────────
+        // ── TCFETCH complete → record pocket and mark empty, sequence done ─
         case TC_FETCH_INCOMING:
+            last_fetched_pocket = tc_incoming_pocket;  // remember where this tool came from
             atc_tc_complete();
             break;
 
         // ── HANDFETCH complete (cycle-start trap fired) ───────────────────
         case TC_HAND_FETCH:
+            last_fetched_pocket = -1;   // hand-loaded — no carousel pocket
             if(next_tool->tool_id == 0 || next_tool->offset.z != 0.0f) {
                 atc_tc_complete();
             } else {
@@ -839,7 +847,6 @@ static status_code_t atc_tc_advance (void)
                 if(status != Status_Handled) {
                     change_completed();
                     tc_state = TC_IDLE;
-                    tooltable_set_m6_prev(-1);
                     return status == Status_OK ? Status_FileOpenFailed : status;
                 }
             }
@@ -877,12 +884,11 @@ static status_code_t tool_change (parser_state_t *parser_state)
         return on_tool_change ? on_tool_change(parser_state) : Status_OK;
 
     tc_incoming_pocket = (pocket_id_t)incoming_entry->pocket;
-    tc_outgoing_pocket = get_carousel_pocket(current_tool.tool_id);
+    tc_outgoing_pocket = last_fetched_pocket;   // -1 if hand-loaded or after power cycle
+    tc_outgoing_tool_id = current_tool.tool_id;  // save before anything changes
 
     if(next_tool->tool_id != 0)
         tooltable_register_tool(next_tool->tool_id, NULL);
-
-    tooltable_set_m6_prev(tc_outgoing_pocket >= 1 ? tc_outgoing_pocket : -1);
 
     spindle_all_off(false);
     hal.coolant.set_state((coolant_state_t){0});
@@ -1239,7 +1245,7 @@ static void atc_settings_load (void)
     if(hal.tool.change != tool_change) {
         on_tool_change = hal.tool.change;
         hal.tool.change = tool_change;
-        grbl.on_toolchange_ack = on_toolchange_ack;
+        //grbl.on_toolchange_ack = on_toolchange_ack;
     }
 
 

@@ -34,12 +34,6 @@ typedef enum {
     CarouselOp_TableNotLoaded       // tooltable not yet loaded
 } carousel_op_result_t;
 
-// Called by the ATC plugin's hal.tool.change handler to record the carousel
-// pocket of the outgoing tool before M6 motion begins.
-// Pass pocket = -1 if the outgoing tool was hand-loaded (not from the carousel).
-// onToolChanged() uses this to restore the pocket assignment on completion.
-void tooltable_set_m6_prev (pocket_id_t pocket);
-
 // Return the name/comment string for a tool from the RAM index.
 // Returns NULL if the tool is not indexed or has no name.
 const char *tooltable_get_name (tool_id_t tool_id);

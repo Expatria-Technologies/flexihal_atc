@@ -1,8 +1,7 @@
-; atc_pause.ngc - Operator notification hook for manual tool change
+; ATC_MACRO_ID_HANDRETURN   393 //manual tool return (raise Z, optional go to G30, then return from macro and trap cycle start.  After cycle start Proceed with TCFETCH or HANDFETCH as appropriate)
 ;
-; Called after the outgoing carousel tool has been returned (if applicable)
-; and before the operator pause.  The ATC plugin has already reported the
-; incoming tool name/comment to the stream if one exists in the tool table.
+; Called when the outgoing tool needs to be removed by hand (no pocket entry)
+; and before the operator pause.
 ;
 ; Parameters set by plugin before this macro runs:
 ;   #4900 = incoming tool number
@@ -10,7 +9,6 @@
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
 ; G30 (second home position) is used as the manual tool change position.
-; Set it once via G10 L2 P30 or the grblHAL coordinate system settings.
 G53 G0 Z0
 G30
 

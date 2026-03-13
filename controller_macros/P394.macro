@@ -1,4 +1,4 @@
-; atc_measure.ngc — Tool length measurement against fixed G59.3 toolsetter
+; ATC_MACRO_ID_MEASURE      394 //probe tool length against G59.3 toolsetter
 ;
 ; Part of the flexiHAL ATC plugin.  Called by the C plugin after a tool is
 ; physically clamped in the spindle — either by the carousel (atc_change.ngc)
@@ -61,7 +61,7 @@
 ;
 ; PROBE SEQUENCE
 ;   1.  Validate current tool number — abort if T0
-;   2.  Read stored Z offset — skip to step 10 if non-zero (already measured)
+;   2.  Read stored Z offset — skip to step 12 if non-zero (already measured)
 ;   3.  Cancel active TLO (G49)
 ;   4.  Rapid Z to home (G53 Z0)
 ;   5.  Rapid XY to G59.3 toolsetter position

@@ -70,22 +70,10 @@ static char              filename[]   = "/tooltable.tbl";
 // Mirrors the pocket0 pattern from the TOOLTABLE_ENABLE==1 implementation.
 static tool_pocket_t     pocket0      = {0};
 
-// M6 tool-change state - set by ATC plugin, consumed in onToolChanged().
-// Holds the carousel pocket the outgoing tool came from, or -1 if it was hand-loaded.
-static pocket_id_t       m6_prev_tool_pocket = -1;
-
 static tool_select_ptr       tool_select;
 static on_tool_changed_ptr   on_tool_changed;
 static on_vfs_mount_ptr      on_vfs_mount;
 static on_report_options_ptr on_report_options;
-
-// ---------------------------------------------------------------------------
-// Public: called by ATC plugin before enqueueing a macro
-// ---------------------------------------------------------------------------
-void tooltable_set_m6_prev (pocket_id_t pocket)
-{
-    m6_prev_tool_pocket = pocket;
-}
 
 // ---------------------------------------------------------------------------
 // Index management
@@ -776,35 +764,11 @@ carousel_op_result_t tooltable_delete (tool_id_t tool_id)
 // ---------------------------------------------------------------------------
 static void onToolChanged (tool_data_t *tool)
 {
-    if(settings.macro_atc_flags.random_toolchanger) {
-
-        pocket_override_t overrides[MAX_OVERRIDES];
-        uint8_t n_overrides = 0;
-
-        // If the incoming tool is not in the file at all, create it with zeroed
-        // offsets now so setTool() (called after probing) has a valid entry to update.
-        // Note: getTool() always returns non-NULL data (falls back to pocket0), so
-        // we check the RAM index directly to determine whether the tool is truly known.
-        if(fs_available && index_find(tool->tool_id) == NULL) {
-            tool_pocket_t blank = {0};
-            blank.tool.tool_id = tool->tool_id;
-            blank.pocket_id    = -1;   // P0 — no pocket yet
-            append_tool(&blank);
-        }
-
-        // Incoming tool: clear its carousel pocket (now in spindle)
-        tool_index_entry_t *picked_up = index_find(tool->tool_id);
-        if(picked_up && picked_up->pocket_id >= 1)
-            overrides[n_overrides++] = (pocket_override_t){ tool->tool_id, -1 };
-
-        // Outgoing tool: return it to its carousel pocket
-        if(m6_prev_tool_pocket >= 1)
-            overrides[n_overrides++] = (pocket_override_t){ current_tool, m6_prev_tool_pocket };
-
-        m6_prev_tool_pocket = -1;
-
-        if(n_overrides > 0)
-            rewrite_file(overrides, n_overrides);
+    if(fs_available && index_find(tool->tool_id) == NULL) {
+        tool_pocket_t blank = {0};
+        blank.tool.tool_id = tool->tool_id;
+        blank.pocket_id    = -1;   // P0 — no pocket yet
+        append_tool(&blank);
     }
 
     current_tool = tool->tool_id;
