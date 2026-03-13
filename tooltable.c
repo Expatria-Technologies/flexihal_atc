@@ -423,42 +423,53 @@ static bool append_tool (const tool_pocket_t *p)
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// grbl.tool_table.get_tool - scan file for tool_id, return full entry.
-// ---------------------------------------------------------------------------
-// grbl.tool_table.get_tool - scan file for tool_id, return full entry.
-// ---------------------------------------------------------------------------
+#define TOOL_CACHE_SIZE 4  // current, pending, and a couple of spares
+
+static tool_table_entry_t cache_result[TOOL_CACHE_SIZE]  = {0};
+static tool_pocket_t      cache_entry[TOOL_CACHE_SIZE]   = {0};
+static tool_data_t        cache_unknown[TOOL_CACHE_SIZE] = {0};
+
 static tool_table_entry_t *getTool (tool_id_t tool_id)
 {
-    static tool_table_entry_t result = {0};
-    static tool_pocket_t      scanned = {0};
-    static tool_data_t        unknown_tool = {0};
+    // Find existing slot for this tool_id, or evict the oldest
+    static uint8_t next_slot = 0;
+    int slot = -1;
 
-    result = (tool_table_entry_t){0};
+    // First check if this tool_id is already cached
+    for(int i = 0; i < TOOL_CACHE_SIZE; i++) {
+        if(cache_result[i].data && cache_result[i].data->tool_id == tool_id) {
+            slot = i;
+            break;
+        }
+    }
 
-    if(file_find(tool_id, &scanned)) {
-        result.data   = &scanned.tool;
-        result.pocket = scanned.pocket_id;
-        result.name   = scanned.name;
-        return &result;
+    // Not found — evict next slot in round-robin order
+    if(slot == -1) {
+        slot = next_slot;
+        next_slot = (next_slot + 1) % TOOL_CACHE_SIZE;
+    }
+
+    cache_result[slot] = (tool_table_entry_t){0};
+
+    if(file_find(tool_id, &cache_entry[slot])) {
+        cache_result[slot].data   = &cache_entry[slot].tool;
+        cache_result[slot].pocket = cache_entry[slot].pocket_id;
+        cache_result[slot].name   = cache_entry[slot].name;
+        return &cache_result[slot];
     }
 
     if(!fs_available) {
-        result.data   = &pocket0.tool;
-        result.pocket = pocket0.pocket_id;
-        result.name   = pocket0.name;
-        return &result;
+        return &(tool_table_entry_t){ .data = &pocket0.tool, .pocket = pocket0.pocket_id, .name = pocket0.name };
     }
 
-    // Unknown tool — auto-register as P0 with no offsets
     tooltable_register_tool(tool_id, NULL);
 
-    unknown_tool = (tool_data_t){0};
-    unknown_tool.tool_id = tool_id;
-    result.data   = &unknown_tool;
-    result.pocket = 0;
-    result.name   = NULL;
-    return &result;
+    cache_unknown[slot] = (tool_data_t){0};
+    cache_unknown[slot].tool_id = tool_id;
+    cache_result[slot].data   = &cache_unknown[slot];
+    cache_result[slot].pocket = 0;
+    cache_result[slot].name   = NULL;
+    return &cache_result[slot];
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +780,7 @@ static void onToolChanged (tool_data_t *tool)
 
 static void onToolSelect (tool_data_t *tool, bool next)
 {
+    
     char buf[128];
     sprintf(buf, "[onToolSelect: tool_id=%u next=%d current_tool=%u gc_state.tool=%u]" ASCII_EOL,
     tool->tool_id, next, current_tool, gc_state.tool ? gc_state.tool->tool_id : 0);

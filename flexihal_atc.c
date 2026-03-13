@@ -888,10 +888,6 @@ void atc_init (void)
     on_probe_fixture = grbl.on_probe_toolsetter;
     grbl.on_probe_toolsetter = probe_fixture;
 
-#if TOOLTABLE_ENABLE == 2
-    settings.macro_atc_flags.random_toolchanger = 1;
-#endif
-
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;
 

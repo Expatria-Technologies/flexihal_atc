@@ -56,6 +56,11 @@
 ;   12. Activate offset: G43 H#5400
 ;   13. Rapid Z to home
 
+; ── 1b. Validate machine is homed ────────────────────────────────────────────
+o105 if [#5440 EQ 0]
+  (abort, ATC measure: machine must be homed before tool measurement)
+o105 endif
+
 ; ── 1. Validate tool number ───────────────────────────────────────────────────
 (print, P394 entry: tool=#5400)
 o100 if [#5400 EQ 0]
@@ -98,7 +103,10 @@ o110 else
   G38.4 Z[#5383 - #4933] F#4934
 
   ; ── 11. Store gauge length in tool table ───────────────────────────────────
+  (print, ATC: pre-G10 pos=#5420_z G59.3_Z=#5383 tool=#5400)
   G10 L11 P#5400 Z0
+  G65 P2 Q#5400 R2
+  (print, ATC: post-G10 offset=#<_value>)
 
   ; ── 12. Activate tool length offset ────────────────────────────────────────
   G43 H#5400

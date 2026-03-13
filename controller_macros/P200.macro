@@ -58,5 +58,7 @@
 ;G65 P7 S3 F16 R1 A1
 ;g4p1
 ;G65 P201
+G4P0
+(print, FlexiATC init complete)
 
 M99
