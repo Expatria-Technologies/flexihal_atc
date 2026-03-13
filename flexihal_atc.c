@@ -32,10 +32,10 @@
 #include "grbl/ngc_flowctrl.h"
 #include "grbl/ngc_params.h"
 #include "tooltable.h"
-#include "atc_tool_change.h"   // tc_probe_tool, tc_manual_tool_change
 
 // Forward declarations — defined after the command handlers
 static pocket_id_t get_carousel_pocket (tool_id_t tool_id);
+static status_code_t atc_tc_advance (void);
 #endif
 
 //#include "flexihal_atc.h"
@@ -118,7 +118,6 @@ static atc_status_flags_t atc_status;
 
 static tool_data_t current_tool = {}, *next_tool = NULL;
 
-static on_macro_execute_ptr on_macro_execute;
 static on_macro_return_ptr on_macro_return = NULL;
 
 static on_spindle_select_ptr on_spindle_select;
@@ -344,6 +343,85 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 
     return Status_OK;
 }
+
+#if TOOLTABLE_ENABLE == 2
+
+// change_completed() restores the HAL pointers when the change finishes or
+// is aborted.  It mirrors the core's change_completed() in tool_change.c.
+// ---------------------------------------------------------------------------
+
+static void change_completed (void)
+{
+    if(enqueue_realtime_command) {
+        while(spin_lock);
+        hal.irq_disable();
+        hal.stream.set_enqueue_rt_handler(enqueue_realtime_command);
+        enqueue_realtime_command = NULL;
+        hal.irq_enable();
+    }
+
+    if(control_interrupt_callback) {
+        while(spin_lock);
+        hal.irq_disable();
+        hal.control.interrupt_callback = control_interrupt_callback;
+        control_interrupt_callback = NULL;
+        hal.irq_enable();
+    }
+
+    gc_state.tool_change = false;
+}
+
+// Task callback — posted by the ISR trampolines, runs in protocol context
+// where it is safe to call system_set_exec_state_flag().
+static void execute_cycle_start (void *data)
+{
+    execute_posted = false;
+    system_set_exec_state_flag(EXEC_CYCLE_START);
+    atc_tc_advance();
+}
+
+ISR_CODE static void ISR_FUNC(trap_control_cycle_start)(control_signals_t signals)
+{
+    spin_lock++;
+
+    if(signals.cycle_start) {
+        if(!execute_posted)
+            execute_posted = task_add_immediate(execute_cycle_start, NULL);
+        signals.cycle_start = Off;
+    } else
+        control_interrupt_callback(signals);
+
+    spin_lock--;
+}
+
+ISR_CODE static bool ISR_FUNC(trap_stream_cycle_start)(uint8_t c)
+{
+    bool drop = false;
+
+    spin_lock++;
+
+    if((drop = (c == CMD_CYCLE_START || c == CMD_CYCLE_START_LEGACY))) {
+        if(!execute_posted)
+            execute_posted = task_add_immediate(execute_cycle_start, NULL);
+    } else
+        drop = enqueue_realtime_command(c);
+
+    spin_lock--;
+
+    return drop;
+}
+
+// Install the cycle-start trap when the sender acknowledges the tool change.
+// Registered as grbl.on_toolchange_ack in atc_settings_load().
+ISR_CODE static void ISR_FUNC(on_toolchange_ack)(void)
+{
+    execute_posted = false;
+    control_interrupt_callback = hal.control.interrupt_callback;
+    hal.control.interrupt_callback = trap_control_cycle_start;
+    enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
+}
+
+#endif // TOOLTABLE_ENABLE == 2
 
 // ---------------------------------------------------------------------------
 // Carousel management commands (TOOLTABLE_ENABLE == 2 only)
@@ -829,7 +907,7 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
 
     report_message("ATC: measuring tool length", Message_Info);
 
-    status_code_t result = tc_probe_tool(atc_parser_state);
+    status_code_t result = true;
 
     if(result != Status_OK)
         report_message("TCMEASURE: probe failed", Message_Warning);
@@ -846,7 +924,7 @@ static status_code_t carousel_remeasure (sys_state_t state, char *args)
 
     report_message("ATC: clearing stored offset and re-measuring tool length", Message_Info);
 
-    status_code_t result = tc_reprobe_tool(atc_parser_state);
+    status_code_t result = true;
 
     if(result != Status_OK)
         report_message("TCREMEASURE: probe failed", Message_Warning);
@@ -1023,85 +1101,6 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
     return status;
 }
-
-#if TOOLTABLE_ENABLE == 2
-
-// change_completed() restores the HAL pointers when the change finishes or
-// is aborted.  It mirrors the core's change_completed() in tool_change.c.
-// ---------------------------------------------------------------------------
-
-static void change_completed (void)
-{
-    if(enqueue_realtime_command) {
-        while(spin_lock);
-        hal.irq_disable();
-        hal.stream.set_enqueue_rt_handler(enqueue_realtime_command);
-        enqueue_realtime_command = NULL;
-        hal.irq_enable();
-    }
-
-    if(control_interrupt_callback) {
-        while(spin_lock);
-        hal.irq_disable();
-        hal.control.interrupt_callback = control_interrupt_callback;
-        control_interrupt_callback = NULL;
-        hal.irq_enable();
-    }
-
-    gc_state.tool_change = false;
-}
-
-// Task callback — posted by the ISR trampolines, runs in protocol context
-// where it is safe to call system_set_exec_state_flag().
-static void execute_cycle_start (void *data)
-{
-    execute_posted = false;
-    system_set_exec_state_flag(EXEC_CYCLE_START);
-    atc_tc_advance();
-}
-
-ISR_CODE static void ISR_FUNC(trap_control_cycle_start)(control_signals_t signals)
-{
-    spin_lock++;
-
-    if(signals.cycle_start) {
-        if(!execute_posted)
-            execute_posted = task_add_immediate(execute_cycle_start, NULL);
-        signals.cycle_start = Off;
-    } else
-        control_interrupt_callback(signals);
-
-    spin_lock--;
-}
-
-ISR_CODE static bool ISR_FUNC(trap_stream_cycle_start)(uint8_t c)
-{
-    bool drop = false;
-
-    spin_lock++;
-
-    if((drop = (c == CMD_CYCLE_START || c == CMD_CYCLE_START_LEGACY))) {
-        if(!execute_posted)
-            execute_posted = task_add_immediate(execute_cycle_start, NULL);
-    } else
-        drop = enqueue_realtime_command(c);
-
-    spin_lock--;
-
-    return drop;
-}
-
-// Install the cycle-start trap when the sender acknowledges the tool change.
-// Registered as grbl.on_toolchange_ack in atc_settings_load().
-ISR_CODE static void ISR_FUNC(on_toolchange_ack)(void)
-{
-    execute_posted = false;
-    control_interrupt_callback = hal.control.interrupt_callback;
-    hal.control.interrupt_callback = trap_control_cycle_start;
-    enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(trap_stream_cycle_start);
-}
-
-#endif // TOOLTABLE_ENABLE == 2
 
 
 static const setting_detail_t atc_settings[] = {
