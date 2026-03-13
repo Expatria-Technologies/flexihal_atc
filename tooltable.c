@@ -66,6 +66,14 @@ static tool_index_entry_t *tt_index   = NULL;   // lightweight RAM index
 static tool_id_t         current_tool = 0;      // tool currently in spindle
 static char              filename[]   = "/tooltable.tbl";
 
+// ---------------------------------------------------------------------------
+// Tool change pocket tracking — volatile, lost on power cycle.
+// last_fetched_pocket remembers which carousel pocket the current spindle
+// tool came from so it can be returned there on the next tool change.
+// ---------------------------------------------------------------------------
+static pocket_id_t last_fetched_pocket = -1;  // pocket current spindle tool came from
+static uint16_t    max_pockets         = 0;   // set by ATC plugin via tooltable_set_max_pockets()
+
 // Zeroed fallback pocket — always valid, used before FS mounts or on empty table.
 // Mirrors the pocket0 pattern from the TOOLTABLE_ENABLE==1 implementation.
 static tool_pocket_t     pocket0      = {0};
@@ -74,6 +82,16 @@ static tool_select_ptr       tool_select;
 static on_tool_changed_ptr   on_tool_changed;
 static on_vfs_mount_ptr      on_vfs_mount;
 static on_report_options_ptr on_report_options;
+
+pocket_id_t tooltable_get_last_fetched_pocket (void)
+{
+    return last_fetched_pocket;
+}
+
+void tooltable_set_max_pockets (uint16_t n)
+{
+    max_pockets = n;
+}
 
 // ---------------------------------------------------------------------------
 // Index management
@@ -764,11 +782,28 @@ carousel_op_result_t tooltable_delete (tool_id_t tool_id)
 // ---------------------------------------------------------------------------
 static void onToolChanged (tool_data_t *tool)
 {
+    // Ensure incoming tool has a table entry
     if(fs_available && index_find(tool->tool_id) == NULL) {
         tool_pocket_t blank = {0};
         blank.tool.tool_id = tool->tool_id;
-        blank.pocket_id    = -1;   // P0 — no pocket yet
+        blank.pocket_id    = -1;
         append_tool(&blank);
+    }
+
+    if(max_pockets > 0) {
+        // Incoming tool fetched from carousel — mark its pocket empty
+        tool_index_entry_t *incoming = index_find(tool->tool_id);
+        if(incoming && incoming->pocket_id >= 1)
+            tooltable_carousel_remove(tool->tool_id);
+
+        // Outgoing tool — return it to a free carousel pocket
+        if(last_fetched_pocket >= 1)
+            tooltable_carousel_add(current_tool, max_pockets, NULL, &last_fetched_pocket);
+
+        // Update last_fetched_pocket for next tool change
+        incoming = index_find(tool->tool_id);
+        last_fetched_pocket = (incoming && incoming->pocket_id >= 1)
+                              ? incoming->pocket_id : -1;
     }
 
     current_tool = tool->tool_id;
@@ -782,10 +817,39 @@ static void onToolSelect (tool_data_t *tool, bool next)
     if(!next)
         current_tool = tool->tool_id;
 
+    if(next && max_pockets > 0) {
+        // Use grblHAL's current tool data directly — reliable on boot
+        // since grblHAL restores it from persistent storage before we run
+        tool_id_t outgoing_id = gc_state.tool ? gc_state.tool->tool_id : 0;
+
+        tool_index_entry_t *incoming = index_find(tool->tool_id);
+        pocket_id_t incoming_pocket = (incoming && incoming->pocket_id >= 1)
+                                      ? incoming->pocket_id : -1;
+
+        ngc_param_set(4900, (float)outgoing_id);
+        ngc_param_set(4901, (float)last_fetched_pocket);
+        ngc_param_set(4902, (float)tool->tool_id);
+        ngc_param_set(4903, (float)incoming_pocket);
+    }
+
     if(tool_select)
         tool_select(tool, next);
 }
 
+static on_macro_return_ptr on_macro_return = NULL;
+
+static void onMacroReturn (void)
+{
+    // If tc.macro (id=99) just completed, fire on_tool_changed manually
+    // since macro_tool_change() never calls gc_tool_changed()
+    if(gc_state.tool && gc_state.tool->tool_id != current_tool) {
+        if(grbl.on_tool_changed)
+            grbl.on_tool_changed(gc_state.tool);
+    }
+
+    if(on_macro_return)
+        on_macro_return();
+}
 // ---------------------------------------------------------------------------
 // $TTINDEX - print the RAM index to console for debugging.
 // Shows only what is in the lightweight in-memory index (tool_id + pocket_id),
@@ -1077,6 +1141,9 @@ void tooltable_init (void)
     on_tool_changed = grbl.on_tool_changed;
     grbl.on_tool_changed = onToolChanged;
 
+    on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = onMacroReturn;
+
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
 
@@ -1095,6 +1162,11 @@ void tooltable_init (void)
     grbl.tool_table.clear           = clearTools;
 
     system_register_commands(&tt_commands);
+
+    settings.macro_atc_flags.random_toolchanger = 1;
+
+    // Seed current_tool from grblHAL's persisted spindle tool on boot
+    current_tool = gc_state.tool ? gc_state.tool->tool_id : 0;
 
 #if SDCARD_ENABLE
     sdcard_early_mount();

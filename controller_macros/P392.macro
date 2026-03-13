@@ -16,5 +16,5 @@ G30
 ; ── Notify operator ───────────────────────────────────────────────────────────
 ; Add any additional signalling here (lights, buzzers, etc.)
 (MSG, Load tool #4900 and press cycle start)
-
+M0
 M2

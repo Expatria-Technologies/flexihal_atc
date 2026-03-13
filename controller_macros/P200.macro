@@ -66,7 +66,7 @@
 #4931 = 0.00000       ; Z - spindle fully clear
 
 ; ── Feed rate ─────────────────────────────────────────────────────────────────
-#4932 = 500.0       ; mm/min — all carousel positioning moves
+#4932 = 1500.0       ; mm/min — all carousel positioning moves
 
 ; ── Toolsetter ────────────────────────────────────────────────────────────────
 ; Toolsetter XYZ is read from G59.3 at probe time (#5381, #5382, #5383).

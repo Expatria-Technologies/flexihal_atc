@@ -34,6 +34,9 @@ typedef enum {
     CarouselOp_TableNotLoaded       // tooltable not yet loaded
 } carousel_op_result_t;
 
+void tooltable_set_max_pockets (uint16_t n);
+pocket_id_t tooltable_get_last_fetched_pocket (void);
+
 // Return the name/comment string for a tool from the RAM index.
 // Returns NULL if the tool is not indexed or has no name.
 const char *tooltable_get_name (tool_id_t tool_id);
