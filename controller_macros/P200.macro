@@ -23,22 +23,22 @@
 ;
 ; ── Position 1: Safe ──────────────────────────────────────────────────────────
 #4920 = -80.71       ; X (machine coords)
-#4921 = 2.000        ; Y
+#4921 = -2.000       ; Y
 #4922 = 0.0          ; Z — typically Z home
 
 ; ── Position 2: Approach ──────────────────────────────────────────────────────
 #4923 = -80.71        ; X (machine coords) beside pocket
-#4924 = 2.000         ; Y
+#4924 = -2.000        ; Y
 #4925 = -137.81       ; Z
 
 ; ── Position 3: Engage ────────────────────────────────────────────────────────
 #4926 = -20.71        ; X (machine coords)
-#4927 =  2.000        ; Y
+#4927 =  -2.000       ; Y
 #4928 = -137.81       ; Z — tool fully seated
 
 ; ── Position 4: Exit ──────────────────────────────────────────────────────────
 #4929 = -20.71        ; X (machine coords)
-#4930 = 2.0000        ; Y
+#4930 = -2.0000       ; Y
 #4931 = 0.00000       ; Z — spindle fully clear
 
 ; ── Feed rate ─────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@
 ; ── Probe settings ────────────────────────────────────────────────────────────
 ; Toolsetter XYZ is read from G59.3 at probe time (#5381, #5382, #5383).
 ; Configure G59.3 via G10 L2 P9 or the grblHAL coordinate system settings.
-#4933 = 150.0          ; probing distance (mm) — max downward travel toward toolsetter
+#4933 = 80.0         ; probing distance (mm) — max downward travel toward toolsetter
 #4934 = 100.0         ; locate feed rate (mm/min) — slow, accurate second probe
 #4935 = 800.0         ; seek feed rate (mm/min) — fast first probe
 #4936 = 5.0           ; pulloff distance (mm) — retract between fast and slow probes
@@ -55,9 +55,9 @@
 ; ── Carousel homing ───────────────────────────────────────────────────────────
 ; Home the carousel
 ; G65 P7 performs the carousel homing cycle; P201 is picohal specific to check success.
-;G65 P7 S3 F16 R1 A1
-;g4p1
-;G65 P201
+G65 P7 S3 F16 R1 A1
+g4p1
+G65 P201
 G4P0
 (print, FlexiATC init complete)
 

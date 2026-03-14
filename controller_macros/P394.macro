@@ -57,7 +57,7 @@
 ;   13. Rapid Z to home
 
 ; ── 1b. Validate machine is homed ────────────────────────────────────────────
-o105 if [#5440 EQ 0]
+o105 if [#<_homed_state> EQ 0]
   (abort, ATC measure: machine must be homed before tool measurement)
 o105 endif
 
@@ -82,7 +82,7 @@ o110 else
   G53 G0 Z0
 
   ; ── 5. XY to toolsetter centre ─────────────────────────────────────────────
-  G53 G0 X#5381 Y#5382
+  G53 G0 Y#5382
 
   ; ── 6. Z to approach height ────────────────────────────────────────────────
   G53 G0 Z#5383

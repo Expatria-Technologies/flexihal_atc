@@ -26,23 +26,23 @@
 ;G65P201
 
 G53 G0 Z#4922
-G53 G0 X#4920 Y#4921
+G53 G0 X#4920
 
 ; ── [CAROUSEL POSITIONING — outgoing tool] ───────────────────────────────
 ; Position the carousel to pocket #4901 here.
 ; Example: G0 A[#4901 * 18.0]   (if A axis drives the carousel)
 ;          or issue a macro code to the carousel MCU (implmented here)
-;G65 P7 S3 F16 R1 A1#4901
+G65 P7 S3 F16 R1 A1#4901
 
 ;wait for idle state/check for alarm.
-;G65P201
+G65P201
 
 ; Approach outgoing pocket (P2)
-G53 G1 X#4923 Y#4924 F#4932
+G53 G1 X#4923 F#4932
 G53 G1 Z#4925 F#4932
 
 ; Engage outgoing pocket (P3) — deposit tool, open drawbar
-G53 G1 X#4926 Y#4927 Z#4928 F#4932
+G53 G1 X#4926 Z#4928 F#4932
 
 ; sync motion
 G4 P0
@@ -51,7 +51,7 @@ $DRBO
 G4 P0.5
 
 ; Exit outgoing pocket (P4)
-G53 G1 X#4929 Y#4930 Z#4931 F#4932
+G53 G1 X#4929 Z#4931 F#4932
 
 ; sync motion
 G4 P0
@@ -60,7 +60,7 @@ $DRBC
 G4 P0.5
 
 ; Withdraw from pocket (P4 → P1)
-G53 G0 X#4920 Y#4921 Z#4922 F#4932
+G53 G0 X#4920 Z#4922 F#4932
 
 ; ── Optionally update current tool to T0 ─────────────────────────────────────
 o200 if [#4905 EQ 1]

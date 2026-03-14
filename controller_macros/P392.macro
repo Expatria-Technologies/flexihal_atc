@@ -8,7 +8,7 @@
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
 G53 G0 Z0
-G30
+G53 G0 X#5181                               ; G30 X only — Y unchanged
 
 ; ── Notify operator ───────────────────────────────────────────────────────────
 (print, ATC: install tool #4902 and press cycle start)
