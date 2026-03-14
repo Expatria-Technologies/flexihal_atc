@@ -356,63 +356,22 @@ static status_code_t carousel_add (sys_state_t state, char *args)
     // ── Deposit tool into assigned pocket via TCRETURN macro ─────────────────
     ngc_param_set(4900, (float)tool_id);
     ngc_param_set(4901, (float)assigned_pocket);
+    ngc_param_set(4905, 1.0f);  // signal P391 to fire M61Q0
 
-    status_code_t motion_result = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
-    if(motion_result != Status_Handled) {
-        // Macro file not found or other synchronous failure — roll back pocket assignment
+    if(!grbl.enqueue_gcode("G65P391")) {
         tooltable_carousel_remove((tool_id_t)tool_id);
-        report_message("TCADD: deposit motion failed — pocket assignment rolled back", Message_Warning);
-        return motion_result == Status_OK ? Status_FileOpenFailed : motion_result;
+        report_message("TCADD: failed to enqueue deposit motion -- pocket assignment rolled back", Message_Warning);
+        return Status_EStop;
     }
 
-    return Status_Unhandled;
+    return Status_OK;
 }
 
 // $TCRETURN  — Return the current spindle tool to its carousel pocket.
-//
-// Uses last_fetched_pocket from tooltable.c to know which pocket to return to.
-// The machine must be homed and IDLE.  Spindle and coolant must be off.
 
 static status_code_t carousel_return (sys_state_t state, char *args)
 {
-    if(state_get() != STATE_IDLE) {
-        report_message("TCRETURN: machine must be IDLE", Message_Warning);
-        return Status_InvalidStatement;
-    }
-
-    if((sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT)) {
-        report_message("TCRETURN: machine must be homed", Message_Warning);
-        return Status_HomingRequired;
-    }
-
-    tool_id_t tool_id = gc_state.tool->tool_id;
-    if(tool_id == 0) {
-        report_message("TCRETURN: no tool in spindle", Message_Warning);
-        return Status_GcodeValueOutOfRange;
-    }
-
-    pocket_id_t pocket = tooltable_get_last_fetched_pocket();
-    if(pocket < 1) {
-        report_message("TCRETURN: no carousel pocket recorded for current spindle tool", Message_Warning);
-        return Status_GcodeValueOutOfRange;
-    }
-
-    spindle_ptrs_t *spindle = spindle_get(0);
-    if(spindle && spindle->get_state && spindle->get_state(spindle).on) {
-        report_message("TCRETURN: spindle must be off", Message_Warning);
-        return Status_GcodeValueOutOfRange;
-    }
-
-    ngc_param_set(4900, (float)tool_id);
-    ngc_param_set(4901, (float)pocket);
-
-    status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_TCRETURN, (parameter_words_t){0}, 1);
-    if(result != Status_Handled) {
-        report_message("TCRETURN: return motion failed", Message_Warning);
-        return result == Status_OK ? Status_FileOpenFailed : result;
-    }
-
-    return Status_Unhandled;
+    return carousel_add(state, NULL);
 }
 
 // $TCRM [Tn]  — Clear a carousel pocket assignment, moving the tool to P0.
@@ -499,13 +458,12 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
         return Status_GcodeValueOutOfRange;
     }
 
-    status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
-    if(result != Status_Handled) {
-        report_message("TCMEASURE: failed to start measure macro", Message_Warning);
-        return result == Status_OK ? Status_FileOpenFailed : result;
+    if(!grbl.enqueue_gcode("G65P394")) {
+        report_message("TCMEASURE: failed to enqueue measure macro", Message_Warning);
+        return Status_EStop;
     }
 
-    return Status_Unhandled;
+    return Status_OK;
 }
 
 // $TCREMEASURE — Clear stored offset and re-measure current tool length.
@@ -528,17 +486,16 @@ static status_code_t carousel_remeasure (sys_state_t state, char *args)
     }
 
     // Clear the stored offset to force re-measurement
-    tool_data_t *tool = gc_state.tool;
-    memset(&tool->offset, 0, sizeof(tool->offset));
-    grbl.tool_table.set_tool(tool);
+    tool_data_t tool = *gc_state.tool;
+    memset(&tool.offset, 0, sizeof(tool.offset));
+    grbl.tool_table.set_tool(&tool);
 
-    status_code_t result = grbl.on_macro_execute(ATC_MACRO_ID_MEASURE, (parameter_words_t){0}, 1);
-    if(result != Status_Handled) {
-        report_message("TCREMEASURE: failed to start measure macro", Message_Warning);
-        return result == Status_OK ? Status_FileOpenFailed : result;
+    if(!grbl.enqueue_gcode("G65P394")) {
+        report_message("TCREMEASURE: failed to enqueue measure macro", Message_Warning);
+        return Status_EStop;
     }
 
-    return Status_Unhandled;
+    return Status_OK;
 }
 
 #endif // TOOLTABLE_ENABLE == 2

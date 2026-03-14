@@ -5,6 +5,7 @@
 ;
 ;   #4900 = tool number
 ;   #4901 = carousel pocket number
+;   #4905 = clear tool at end
 ;
 ; Geometry parameters — set once by G65 P200 in your startup macro:
 ;
@@ -60,5 +61,11 @@ G4 P0.5
 
 ; Withdraw from pocket (P4 → P1)
 G53 G0 X#4920 Y#4921 Z#4922 F#4932
+
+; ── Optionally update current tool to T0 ─────────────────────────────────────
+o200 if [#4905 EQ 1]
+  #4905 = 0
+  M61 Q0
+o200 endif
 
 M99
