@@ -88,23 +88,24 @@ o110 else
   G53 G0 Z#5383
 
   ; ── 7. Fast seek — G38.3 (probe toward, no error on miss) ──────────────────
-  G38.3 Z[#5383 - #4933] F#4935
-
+  G91
+  G38.3 Z[-#4933] F#4935
+  G90
+  
   ; ── 8. Abort if toolsetter not triggered ───────────────────────────────────
   o120 if [#5070 NE 1]
     (abort, ATC measure: toolsetter not triggered on seek -- check #4933 and G59.3 Z)
   o120 endif
 
-  ; ── 9. Retract ─────────────────────────────────────────────────────────────
-  G91 G0 Z#4936
+  ; ── 10. Slow locate probe — G38.4 (probe away, error if no loss of contact) ───
+  G91
+  G38.4 Z[#4933] F#4934
   G90
-
-  ; ── 10. Slow locate probe — G38.4 (probe away, error on loss of contact) ───
-  G38.4 Z[#5383 - #4933] F#4934
+  G4P0
 
   ; ── 11. Store gauge length in tool table ───────────────────────────────────
-  (print, ATC: pre-G10 pos=#5420_z G59.3_Z=#5383 tool=#5400)
-  G10 L11 P#5400 Z0
+  (print, ATC: probe Z=#5063 abs_z=#<_abs_z> G59.3_Z=#5383 tool=#5400)
+  G10 L11 P#5400 Z[#<_abs_z> - #5383]
   G65 P2 Q#5400 R2
   (print, ATC: post-G10 offset=#<_value>)
 

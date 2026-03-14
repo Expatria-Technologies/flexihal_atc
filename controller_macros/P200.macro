@@ -42,12 +42,12 @@
 #4931 = 0.00000       ; Z — spindle fully clear
 
 ; ── Feed rate ─────────────────────────────────────────────────────────────────
-#4932 = 1500.0        ; mm/min — all carousel positioning moves
+#4932 = 2500.0        ; mm/min — all carousel positioning moves
 
 ; ── Probe settings ────────────────────────────────────────────────────────────
 ; Toolsetter XYZ is read from G59.3 at probe time (#5381, #5382, #5383).
 ; Configure G59.3 via G10 L2 P9 or the grblHAL coordinate system settings.
-#4933 = 60.0         ; probing distance (mm) — max downward travel toward toolsetter
+#4933 = 90.0         ; probing distance (mm) — max downward travel toward toolsetter
 #4934 = 100.0         ; locate feed rate (mm/min) — slow, accurate second probe
 #4935 = 800.0         ; seek feed rate (mm/min) — fast first probe
 #4936 = 5.0           ; pulloff distance (mm) — retract between fast and slow probes
