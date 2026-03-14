@@ -1,11 +1,11 @@
 ; ATC_MACRO_ID_TCRETURN  391 //return to tool carousel (OpenPnP four-positions style)
 ;
-; Called by flexihal_atc.c tool_change() when the requested tool is deposited to the
-; carousel.  Parameters set by the plugin before this macro runs:
-;
+; Parameters:
 ;   #4900 = tool number
 ;   #4901 = carousel pocket number
-;   #4905 = clear tool at end
+;   #4905 = 1: fire M61 Q0 at end (called from $TCADD/$TCRETURN), 0: skip
+;   #4906 = 0: open carousel, rotate, close (return only)
+;           1: open carousel, rotate, leave open (return in a fetch+return pair)
 ;
 ; Geometry parameters — set once by G65 P200 in your startup macro:
 ;
@@ -15,52 +15,43 @@
 ;   #4929-#4931  Position 4: Exit XYZ
 ;   #4932        Feed rate for all carousel positioning moves (mm/min)
 ;
-; Pocket positioning is handled externally (dedicated axis or separate MCU).
-; Add the appropriate motion or M-code in the marked sections below.
-;
-; Unload sequence:  P1 → P2 → P3 [open drawbar]  → P4 [close drawbar]
+; Unload sequence:  P1 → P2 → P3 [open drawbar] → P4 [close drawbar]
 
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
-
-;wait for idle state/check for alarm.
-;G65P201
-
 G53 G0 Z#4922
 G53 G0 X#4920
 
-; ── [CAROUSEL POSITIONING — outgoing tool] ───────────────────────────────
-; Position the carousel to pocket #4901 here.
-; Example: G0 A[#4901 * 18.0]   (if A axis drives the carousel)
-;          or issue a macro code to the carousel MCU (implmented here)
+; ── Open carousel ────────────────────────────────────────────────────────────
+G65 P7 S3 F16 R1 A99
+
+; ── Carousel positioning — rotate to outgoing pocket ─────────────────────────
+; [ADD CAROUSEL ROTATION TO POCKET #4901 HERE]
 G65 P7 S3 F16 R1 A1#4901
+G65 P201
 
-;wait for idle state/check for alarm.
-G65P201
-
-; Approach outgoing pocket (P2)
+; ── Approach outgoing pocket (P2) ────────────────────────────────────────────
 G53 G1 X#4923 F#4932
 G53 G1 Z#4925 F#4932
 
-; Engage outgoing pocket (P3) — deposit tool, open drawbar
+; ── Engage outgoing pocket (P3) — deposit tool, open drawbar ─────────────────
 G53 G1 X#4926 Z#4928 F#4932
-
-; sync motion
 G4 P0
-
 $DRBO
 G4 P0.5
 
-; Exit outgoing pocket (P4)
+; ── Exit outgoing pocket (P4) ────────────────────────────────────────────────
 G53 G1 X#4929 Z#4931 F#4932
-
-; sync motion
 G4 P0
-
 $DRBC
 G4 P0.5
 
-; Withdraw from pocket (P4 → P1)
-G53 G0 X#4920 Z#4922 F#4932
+; ── Withdraw to safe position (P1) ───────────────────────────────────────────
+G53 G0 X#4920 Z#4922
+
+; ── Close carousel (only if not leaving open for subsequent fetch) ────────────
+o110 if [#4906 EQ 0]
+  G65 P7 S3 F16 R1 A98
+o110 endif
 
 ; ── Optionally update current tool to T0 ─────────────────────────────────────
 o200 if [#4905 EQ 1]

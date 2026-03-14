@@ -32,28 +32,34 @@ o10 else
   (print, ATC: tool change T[#4900] -> T[#4902])
   (print, ATC: outgoing pocket=[#4901] incoming pocket=[#4903])
 
-  ; ── Step 1: Return outgoing tool ───────────────────────────────────────────
-  o100 if [#4900 NE 0]                        ; skip if spindle was empty
-    o110 if [#4901 GE 1]                      ; outgoing tool came from carousel
-      (print, ATC: returning T[#4900] to carousel pocket [#4901])
-      G65 P391                                ; tcreturn — #4900=tool_id, #4901=pocket
-    o110 else                                 ; outgoing tool was hand-loaded
-      (print, ATC: remove hand-loaded T[#4900] and press cycle start)
-      G65 P393                                ; handreturn — M0 pause
+; ── Step 1: Return outgoing tool ───────────────────────────────────────────
+  o100 if [#4900 NE 0]
+    o110 if [#4901 GE 1]
+      o115 if [#4903 GE 1]                  ; fetch+return — leave carousel open
+        #4906 = 1
+      o115 else                             ; return only
+        #4906 = 0
+      o115 endif
+      G65 P391
+    o110 else
+      G65 P393
     o110 endif
   o100 endif
 
-; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
-  o120 if [#4902 EQ 0]                        ; T0 — empty spindle requested
+  ; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
+  o120 if [#4902 EQ 0]
     (print, ATC: T0 requested -- spindle will be empty)
-  o120 elseif [#4903 GE 1]                    ; incoming tool is in carousel
-    (print, ATC: fetching T[#4902] from carousel pocket [#4903])
-    #4900 = #4902                             ; set fetch parameters
+  o120 elseif [#4903 GE 1]
+    #4900 = #4902
     #4901 = #4903
-    G65 P390                                  ; tcfetch — #4900=tool_id, #4901=pocket
-  o120 else                                   ; incoming tool is hand-loaded
-    (print, ATC: install T[#4902] manually and press cycle start)
-    G65 P392                                  ; handfetch — M0 pause
+    o121 if [#4906 EQ 1]                    ; carousel was left open by P391
+      #4906 = 2
+    o121 else
+      #4906 = 0                             ; fetch only
+    o121 endif
+    G65 P390
+  o120 else
+    G65 P392
   o120 endif
 
   ; ── Step 3: Update current tool ────────────────────────────────────────────

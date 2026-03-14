@@ -1,10 +1,10 @@
 ; ATC_MACRO_ID_TCFETCH 390 //fetch from tool carousel (OpenPnP four-positions style)
 ;
-; Called by flexihal_atc.c tool_change() when the requested tool is in the
-; carousel.  Parameters set by the plugin before this macro runs:
-;
+; Parameters:
 ;   #4900 = tool number
 ;   #4901 = carousel pocket number
+;   #4906 = 0: open carousel, rotate, close (fetch only)
+;           2: rotate only, close at end (fetch in a fetch+return pair — carousel already open)
 ;
 ; Geometry parameters — set once by G65 P200 in your startup macro:
 ;
@@ -14,49 +14,39 @@
 ;   #4929-#4931  Position 4: Exit XYZ
 ;   #4932        Feed rate for all carousel positioning moves (mm/min)
 ;
-; Pocket positioning is handled externally (dedicated axis or separate MCU).
-; Add the appropriate motion or M-code in the marked sections below.
-;
-; Load sequence:    P4 [open drawbar] → P3 [close drawbar] → P2 → P1
+; Load sequence:  P4 [open drawbar] → P3 [close drawbar] → P2 → P1
 
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
-
-;wait for idle state/check for alarm.
-;G65P201
-
 G53 G0 Z#4922
 G53 G0 X#4920
 
-; ── [CAROUSEL POSITIONING — incoming tool] ───────────────────────────────────
-; Position the carousel to pocket #4901 here.
-; Example: G0 A[#4901 * 18.0]   (if A axis drives the carousel)
-;          or issue an M-code to the carousel MCU
-;G65 P7 S3 F16 R1 A1#4901
+; ── Open carousel (fetch only — already open in fetch+return pair) ────────────
+o100 if [#4906 EQ 0]
+  G65 P7 S3 F16 R1 A99
+o100 endif
 
-;wait for idle state/check for alarm.
-;G65P201
+; ── Carousel positioning — rotate to incoming pocket ─────────────────────────
+; [ADD CAROUSEL ROTATION TO POCKET #4901 HERE]
+G65 P7 S3 F16 R1 A1#4901
 
-; Move to P4
+; ── Move to P4 ───────────────────────────────────────────────────────────────
 G53 G1 X#4929 Z#4931 F#4932
-
-; sync motion
 G4 P0
-; open drawbar
 $DRBO
 G4 P0.5
 
-; Descend to incoming pocket (P4 → P3) — clamp tool
+; ── Descend to incoming pocket (P4 → P3) — clamp tool ───────────────────────
 G53 G1 X#4926 Z#4928 F#4932
-
-; sync motion
 G4 P0
-
 $DRBC
 G4 P0.5
 
-; Withdraw from pocket (P3 → P2 → P1)
+; ── Withdraw from pocket (P3 → P2 → P1) ─────────────────────────────────────
 G53 G1 X#4923 Z#4925 F#4932
 G53 G0 Z#4922
 G53 G0 X#4920
+
+; ── Close carousel ───────────────────────────────────────────────────────────
+  G65 P7 S3 F16 R1 A98
 
 M99
