@@ -22,11 +22,13 @@ G53 G0 Z#4922
 G53 G0 X#4920
 
 ; ── Open carousel ────────────────────────────────────────────────────────────
+G65 P201
 G65 P7 S3 F16 R1 A99
 
 ; ── Carousel positioning — rotate to outgoing pocket ─────────────────────────
 ; [ADD CAROUSEL ROTATION TO POCKET #4901 HERE]
-G65 P7 S3 F16 R1 A1#4901
+G65 P201
+G65 P7 S3 F16 R1 A[100 + #4901]
 G65 P201
 
 ; ── Approach outgoing pocket (P2) ────────────────────────────────────────────
@@ -37,19 +39,20 @@ G53 G1 Z#4925 F#4932
 G53 G1 X#4926 Z#4928 F#4932
 G4 P0
 $DRBO
-G4 P0.5
+G4 P0
 
 ; ── Exit outgoing pocket (P4) ────────────────────────────────────────────────
 G53 G1 X#4929 Z#4931 F#4932
 G4 P0
 $DRBC
-G4 P0.5
+G4 P0
 
 ; ── Withdraw to safe position (P1) ───────────────────────────────────────────
 G53 G0 X#4920 Z#4922
 
 ; ── Close carousel (only if not leaving open for subsequent fetch) ────────────
 o110 if [#4906 EQ 0]
+  G4 P0
   G65 P7 S3 F16 R1 A98
 o110 endif
 
