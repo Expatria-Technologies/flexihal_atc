@@ -522,6 +522,10 @@ static tool_table_entry_t *getToolByIdx (uint32_t idx)
 // ---------------------------------------------------------------------------
 static bool setTool (tool_data_t *tool_data)
 {
+    char buf[80];
+    sprintf(buf, "[setTool: tool_id=%ld Z=%.3f]\n", (long)tool_data->tool_id, tool_data->offset.values[Z_AXIS]);
+    hal.stream.write(buf);
+    
     if(!tool_data || tool_data->tool_id < 0)
         return false;
 

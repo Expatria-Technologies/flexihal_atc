@@ -103,9 +103,12 @@ static atc_status_flags_t atc_status;
 
 static on_spindle_select_ptr on_spindle_select;
 static on_probe_toolsetter_ptr on_probe_fixture;
+static probe_configure_ptr on_probe_configure = NULL;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
+
+static bool is_away = false;
 
 static uint8_t n_in_ports;
 static uint8_t n_out_ports;
@@ -655,9 +658,11 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 {
     bool status = true;
 
+    //bool is_away
+
     if(at_g59_3 && on) {
         report_message("ATC tool probe", Message_Info);
-        if(atc.flags.tlo_clear_active) {
+        if(atc.flags.tlo_clear_active && !is_away) {
             hal.port.digital_out(active_ports.tlo_clear, 1);
             hal.delay_ms(atc.drawbar_delay, NULL);
             hal.port.digital_out(active_ports.tlo_clear, 0);
@@ -668,6 +673,15 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
         status = on_probe_fixture(tool, position, at_g59_3, on);
 
     return status;
+}
+
+static void probeConfigure (bool is_probe_away, bool probing)
+{
+    is_away = is_probe_away;
+    
+    if(on_probe_configure)
+        on_probe_configure(is_probe_away, probing);
+    
 }
 
 // ===========================================================================
@@ -845,6 +859,9 @@ void atc_init (void)
 
     on_spindle_select = grbl.on_spindle_select;
     grbl.on_spindle_select = onSpindleSelect;
+
+    on_probe_configure = hal.probe.configure;
+    hal.probe.configure = probeConfigure;
 
     on_probe_fixture = grbl.on_probe_toolsetter;
     grbl.on_probe_toolsetter = probe_fixture;
