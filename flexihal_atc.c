@@ -161,6 +161,7 @@ status_code_t drawbar_open (sys_state_t state, char *args)
     switch(state_get()) {
         case STATE_IDLE:
         case STATE_TOOL_CHANGE:
+        case STATE_HOLD:
             break;
         default:
             report_message("Drawbar can only open in IDLE or TOOL state", Message_Warning);
@@ -218,6 +219,7 @@ status_code_t drawbar_close (sys_state_t state, char *args)
     switch(state_get()) {
         case STATE_IDLE:
         case STATE_TOOL_CHANGE:
+        case STATE_HOLD:
             break;
         default:
             return Status_OK;
@@ -557,14 +559,16 @@ static void atc_poll (void *data)
     if((prev_val == 0) && (val == 0) && (latch == 0)) {
         if(zero_count >= DEBOUNCE_THRESHOLD) {
             latch = 1;
-            grbl.enqueue_gcode("$DRBO");
+            //grbl.enqueue_gcode("$DRBO");
+            drawbar_open(state_get(), NULL);
             zero_count = 0;
         }
     } else if(((prev_val == 1) && (val == 1) && (latch == 1)) ||
               (zero_count >= ZERO_THRESHOLD)) {
         if(one_count >= 1 || zero_count >= ZERO_THRESHOLD) {
             latch = 0;
-            grbl.enqueue_gcode("$DRBC");
+            //grbl.enqueue_gcode("$DRBC");
+            drawbar_close(state_get(), NULL);
             one_count  = 0;
             zero_count = 0;
         }
