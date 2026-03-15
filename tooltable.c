@@ -838,10 +838,8 @@ static status_code_t list_tools (sys_state_t state, char *args)
         sprintf(buf, "[TOOL: P%u T%u", file_pocket, (uint16_t)entry.tool.tool_id);
 
         for(uint_fast8_t axis = 0; axis < N_AXIS; axis++) {
-            if(fabsf(entry.tool.offset.values[axis]) > 0.0001f) {
-                sprintf(tmp, " %s%.3f", axis_letter[axis], entry.tool.offset.values[axis]);
-                strcat(buf, tmp);
-            }
+            sprintf(tmp, " %s%.3f", axis_letter[axis], entry.tool.offset.values[axis]);
+            strcat(buf, tmp);
         }
 
         if(entry.tool.radius != 0.0f) {
@@ -1055,7 +1053,7 @@ void tooltable_init (void)
     static const sys_command_t tt_command_list[] = {
         { "TTLOAD",  load_tools,     {}, { .str = "(re)load tool table from SD card" } },
         { "TTLIST",  list_tools,     {}, { .str = "List all tools in the tool table" } },
-        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn [,name]" } },
+        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn[,name]" } },
         { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL=Tn" } }
     };
 
