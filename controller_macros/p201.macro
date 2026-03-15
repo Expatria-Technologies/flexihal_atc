@@ -7,22 +7,22 @@
 #<max_iterations> = 30        ; 30 iterations x 1 second dwell = 30 second timeout
 #<timed_out> = 0              ; flag: 0 = success, 1 = timed out
 
-(print, P201: Starting idle coil poll - max_iterations=#<max_iterations>)
+;(print, P201: Starting idle coil poll - max_iterations=#<max_iterations>)
 
 o100 do
-    (print, P201: Poll attempt #<timeout_count> - calling G65 P7 S3 F1 R0 X1)
+    ;(print, P201: Poll attempt #<timeout_count> - calling G65 P7 S3 F1 R0 X1)
     G65 P7 S3 F1 R1 X1        ; Read 1 coil from device 3, address 0 (coil 1)
-    (print, P201: FC1 response - _value_returned=#<_value_returned> _value=#<_value>)
+    ;(print, P201: FC1 response - _value_returned=#<_value_returned> _value=#<_value>)
     #<coil1> = #<_value>       ; store result
-    (print, P201: coil1=#<coil1>)
+    ;(print, P201: coil1=#<coil1>)
 
     o110 if [#<_value_returned> GT 0 AND #<coil1> EQ 1]
-        (print, P201: Coil 1 is 1 - idle confirmed, exiting loop)
+        ;(print, P201: Coil 1 is 1 - idle confirmed, exiting loop)
         o100 break             ; coil is 1, exit the loop
     o110 endif
 
     #<timeout_count> = [#<timeout_count> + 1]
-    (print, P201: Not idle yet - timeout_count=#<timeout_count> of #<max_iterations>)
+    ;(print, P201: Not idle yet - timeout_count=#<timeout_count> of #<max_iterations>)
 
     o120 if [#<timeout_count> GE #<max_iterations>]
         #<timed_out> = 1
@@ -30,11 +30,11 @@ o100 do
         o100 break
     o120 endif
 
-    (print, P201: Dwelling 1 second)
+    ;(print, P201: Dwelling 1 second)
     G4 P1                      ; dwell 1 second before retrying
 o100 while [1]                 ; loop forever (exit via break)
 
-(print, P201: Coil poll complete - timeout_count=#<timeout_count> coil1=#<coil1> timed_out=#<timed_out>)
+;(print, P201: Coil poll complete - timeout_count=#<timeout_count> coil1=#<coil1> timed_out=#<timed_out>)
 
 o140 if [#<timed_out> EQ 1]
     (ABORT, P201: Skipping alarm check due to timeout - system state unknown)
@@ -43,11 +43,11 @@ o140 endif
 ; --- Read register address 0 from device 3 and alarm if value is 1 ---
 ; FC3 = read holding registers. Adjust to FC4 if input registers.
 
-(print, P201: Checking alarm register - calling G65 P7 S3 F3 R0 X1)
+;(print, P201: Checking alarm register - calling G65 P7 S3 F3 R0 X1)
 G65 P7 S3 F1 R0 X1            ; Read 1 coil from device 3, address 0
-(print, P201: FC3 response - _value_returned=#<_value_returned> _value=#<_value>)
+;(print, P201: FC3 response - _value_returned=#<_value_returned> _value=#<_value>)
 #<reg0> = #<_value>
-(print, P201: reg0=#<reg0>)
+;(print, P201: reg0=#<reg0>)
 
 o130 if [#<_value_returned> GT 0 AND #<reg0> EQ 1]
     (ABORT, Alarm condition: register 0 = 1 on device 3)

@@ -23,12 +23,7 @@
 ;   Parameters used: #5381 (G59.3 X), #5382 (G59.3 Y), #5383 (G59.3 Z)
 ;
 ; TOOL LENGTH OFFSET
-;   Uses G10 L11 to store the measured length in the tool table.
-;   G10 L11 sets the tool table entry so that — when G43 is subsequently
-;   active and the machine is in G59.3 — the current position reads as the
-;   given value.  Passing Z0 means "the tool tip is at the G59.3 Z origin",
-;   which is the toolsetter trigger point.  grblHAL/LinuxCNC then back-calculates
-;   and stores the correct absolute gauge length automatically.
+;   Uses G10 L1 to store the measured length in the tool table.
 ;
 ;   G49 is issued before probing to cancel any active TLO so that the probe
 ;   result is a raw machine coordinate unaffected by a previous tool's offset.
