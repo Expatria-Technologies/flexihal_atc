@@ -51,13 +51,7 @@ static bool              fs_available = false;  // VFS has been mounted
 static tool_id_t         current_tool = 0;      // tool currently in spindle
 static char              filename[]   = "/tooltable.tbl";
 
-// ---------------------------------------------------------------------------
-// Tool change pocket tracking — volatile, lost on power cycle.
-// last_fetched_pocket remembers which carousel pocket the current spindle
-// tool came from so it can be returned there on the next tool change.
-// ---------------------------------------------------------------------------
-static pocket_id_t last_fetched_pocket = -1;  // pocket current spindle tool came from
-static uint16_t    max_pockets         = 0;   // set by ATC plugin via tooltable_set_max_pockets()
+static uint16_t    max_pockets = 0;   // set by ATC plugin via tooltable_set_max_pockets()
 
 // Zeroed fallback pocket — always valid, used before FS mounts or on empty table.
 // Mirrors the pocket0 pattern from the TOOLTABLE_ENABLE==1 implementation.
@@ -67,11 +61,6 @@ static tool_select_ptr       tool_select;
 static on_tool_changed_ptr   on_tool_changed;
 static on_vfs_mount_ptr      on_vfs_mount;
 static on_report_options_ptr on_report_options;
-
-pocket_id_t tooltable_get_last_fetched_pocket (void)
-{
-    return last_fetched_pocket;
-}
 
 void tooltable_set_max_pockets (uint16_t n)
 {
@@ -759,7 +748,9 @@ carousel_op_result_t tooltable_delete (tool_id_t tool_id)
 }
 
 // ---------------------------------------------------------------------------
-// onToolChanged - atomically update two pocket assignments after M6.
+// onToolChanged - called after M6/M61 completes.
+// Registers new tools automatically and updates current_tool.
+// Pocket assignments are permanent — managed explicitly via $TCADD/$TCRM.
 // ---------------------------------------------------------------------------
 static void onToolChanged (tool_data_t *tool)
 {
@@ -767,24 +758,6 @@ static void onToolChanged (tool_data_t *tool)
     // tooltable_register_tool() handles the "already exists" case gracefully.
     if(fs_available && tool->tool_id > 0)
         tooltable_register_tool(tool->tool_id, NULL);
-
-if(max_pockets > 0) {
-    // Incoming tool fetched from carousel — capture its pocket before removing it
-    tool_pocket_t incoming;
-    pocket_id_t incoming_pocket = -1;
-    if(file_find(tool->tool_id, &incoming) && incoming.pocket_id >= 1)
-        incoming_pocket = incoming.pocket_id;
-
-    if(incoming_pocket >= 1)
-        tooltable_carousel_remove(tool->tool_id);
-
-    // Outgoing tool — return it to its original carousel pocket
-    if(last_fetched_pocket >= 1)
-        tooltable_carousel_add(current_tool, max_pockets, NULL, &last_fetched_pocket);
-
-    // Now safe to update last_fetched_pocket
-    last_fetched_pocket = incoming_pocket;
-}
 
     current_tool = tool->tool_id;
 
@@ -794,7 +767,6 @@ if(max_pockets > 0) {
 
 static void onToolSelect (tool_data_t *tool, bool next)
 {
-    
     char buf[128];
     sprintf(buf, "[onToolSelect: tool_id=%u next=%d current_tool=%u gc_state.tool=%u]" ASCII_EOL,
     tool->tool_id, next, current_tool, gc_state.tool ? gc_state.tool->tool_id : 0);
@@ -810,14 +782,20 @@ static void onToolSelect (tool_data_t *tool, bool next)
         // since grblHAL restores it from persistent storage before we run
         tool_id_t outgoing_id = gc_state.tool ? gc_state.tool->tool_id : 0;
 
-        // Use file_find() so P0 tools are found correctly
+        // Look up outgoing pocket directly from file — permanent assignment
+        tool_pocket_t outgoing;
+        pocket_id_t outgoing_pocket = -1;
+        if(outgoing_id > 0 && file_find(outgoing_id, &outgoing) && outgoing.pocket_id >= 1)
+            outgoing_pocket = outgoing.pocket_id;
+
+        // Look up incoming pocket directly from file
         tool_pocket_t incoming;
         pocket_id_t incoming_pocket = -1;
         if(file_find(tool->tool_id, &incoming) && incoming.pocket_id >= 1)
             incoming_pocket = incoming.pocket_id;
 
         ngc_param_set(4900, (float)outgoing_id);
-        ngc_param_set(4901, (float)last_fetched_pocket);
+        ngc_param_set(4901, (float)outgoing_pocket);
         ngc_param_set(4902, (float)tool->tool_id);
         ngc_param_set(4903, (float)incoming_pocket);
         ngc_param_set(4904, 0.0f);      // signal: real Txx pre-selection
