@@ -362,6 +362,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
     ngc_param_set(4900, (float)tool_id);
     ngc_param_set(4901, (float)assigned_pocket);
     ngc_param_set(4905, 1.0f);  // signal P391 to fire M61Q0
+    ngc_param_set(4906, 0.0f);   // open, rotate, close (standalone deposit)
 
     if(!grbl.enqueue_gcode("G65P391")) {
         tooltable_carousel_remove((tool_id_t)tool_id);

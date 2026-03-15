@@ -458,9 +458,17 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         return &cache_result[slot];
     }
 
-    if(!fs_available) {
+    /*if(!fs_available) {
         return &(tool_table_entry_t){ .data = &pocket0.tool, .pocket = pocket0.pocket_id, .name = pocket0.name };
     }
+    */
+    if(!fs_available) {
+        cache_result[slot] = (tool_table_entry_t){0};
+        cache_result[slot].data   = &pocket0.tool;
+        cache_result[slot].pocket = pocket0.pocket_id;
+        cache_result[slot].name   = pocket0.name;
+        return &cache_result[slot];
+    }   
 
     tooltable_register_tool(tool_id, NULL);
 
@@ -760,21 +768,23 @@ static void onToolChanged (tool_data_t *tool)
     if(fs_available && tool->tool_id > 0)
         tooltable_register_tool(tool->tool_id, NULL);
 
-    if(max_pockets > 0) {
-        // Incoming tool fetched from carousel — mark its pocket empty
-        tool_pocket_t incoming;
-        if(file_find(tool->tool_id, &incoming) && incoming.pocket_id >= 1)
-            tooltable_carousel_remove(tool->tool_id);
+if(max_pockets > 0) {
+    // Incoming tool fetched from carousel — capture its pocket before removing it
+    tool_pocket_t incoming;
+    pocket_id_t incoming_pocket = -1;
+    if(file_find(tool->tool_id, &incoming) && incoming.pocket_id >= 1)
+        incoming_pocket = incoming.pocket_id;
 
-        // Outgoing tool — return it to its original carousel pocket
-        if(last_fetched_pocket >= 1)
-            tooltable_carousel_add(current_tool, max_pockets, NULL, &last_fetched_pocket);
+    if(incoming_pocket >= 1)
+        tooltable_carousel_remove(tool->tool_id);
 
-        // Update last_fetched_pocket for next tool change
-        tool_pocket_t updated;
-        last_fetched_pocket = (file_find(tool->tool_id, &updated) && updated.pocket_id >= 1)
-                              ? updated.pocket_id : -1;
-    }
+    // Outgoing tool — return it to its original carousel pocket
+    if(last_fetched_pocket >= 1)
+        tooltable_carousel_add(current_tool, max_pockets, NULL, &last_fetched_pocket);
+
+    // Now safe to update last_fetched_pocket
+    last_fetched_pocket = incoming_pocket;
+}
 
     current_tool = tool->tool_id;
 
