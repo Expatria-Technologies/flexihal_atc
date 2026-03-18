@@ -1,24 +1,33 @@
 ; grblHAL tooltable - LinuxCNC format
-; P<pocket> T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]
-; P0 entries are tools known to the system but not currently in the carousel.
+; T<tool> [X<offset>] [Y<offset>] [Z<offset>] [D<diameter>] [; name]
+; Converted from Bill_Mill.hsmlib
+; NOTE: Z offsets are not stored in .hsmlib files and must be measured/set manually.
 
-P1 T1 Z-45.230 D12.000 ; 12mm flat endmill
-P2 T2 Z-48.115 D6.000 ; 6mm flat endmill
-P3 T3 Z-62.480 D3.000 ; 3mm flat endmill
-P4 T4 Z-91.750 D25.000 ; 25mm face mill
-P5 T5 Z-55.320 D10.000 ; 10mm flat endmill
-P6 T6 Z-38.640 D8.000 ; 8mm ball nose endmill
-P7 T7 Z-44.190 D6.000 ; 6mm ball nose endmill
-P8 T8 Z-72.880 D8.500 ; 8.5mm drill
-P9 T9 Z-68.200 D6.800 ; 6.8mm drill 
-P10 T10 Z-65.430 D5.000 ; 5mm drill
-P11 T11 Z-79.110 D10.500 ; 10.5mm drill (M12 tap drill)
-P12 T12 Z-52.760 D4.000 ; 4mm flat endmill
-P0 T13 Z-84.320 D16.000 ; 16mm flat endmill
-P0 T14 Z-41.550 D3.175 ; 1/8 inch flat endmill
-P0 T15 Z-58.900 D2.000 ; 2mm flat endmill
-P0 T16 Z-95.440 D32.000 ; 32mm face mill
-P0 T17 Z-47.230 D6.000 ; 6mm chamfer mill
-P0 T18 Z-66.780 D8.000 ; 8mm drill
-P0 T19 Z-50.010 D12.000 ; 12mm ball nose endmill
-P0 T20 Z-88.650 D20.000 ; 20mm flat endmill
+T2   Z0.000 D3.175   ; 1/8" 2 FLT CRB Flat Endmill
+T3   Z0.000 D3.100   ; 3.1mm 1FLT CRB Flat Endmill
+T4   Z0.000 D10.000  ; 10mm 1FLT CRB BAP (face mill)
+T5   Z0.000 D7.950   ; 8mm 1FLT CRB Flat Endmill
+T6   Z0.000 D5.950   ; 6mm 1FLT CRB Flat Endmill 17mm
+T7   Z0.000 D3.950   ; 4mm 1FLT CRB Flat Endmill
+T8   Z0.000 D5.950   ; 6mm 1FLT CRB Flat Endmill 25mm
+T11  Z0.000 D4.800   ; P1.0 D4.8 Single thread mill
+T16  Z0.000 D7.938   ; 5/16" CRB 3 FLT Flat Endmill
+T17  Z0.000 D7.970   ; 8mm CRB 3 FLT Flat Finishmill
+T20  Z0.000 D3.950   ; 1/8 CNTR 90 DEG CRB 2FLT (counter sink)
+T21  Z0.000 D6.350   ; 1/4 CNTR 90 DEG CRB 4FLT (counter sink)
+T22  Z0.000 D9.525   ; 3/8 CNTR 90 DEG CRB 4FLT (counter sink)
+T26  Z0.000 D17.000  ; 17mm 2 FLT Facemill
+T30  Z0.000 D6.000   ; 6mm drill
+T31  Z0.000 D11.113  ; 7/16" CRB 3 FLT Flat Endmill
+T42  Z0.000 D8.000   ; 8mm 1FLT CRB BAP (face mill)
+T100 Z0.000 D1.000   ; 2.5mm drill (T100 - check body diameter)
+T101 Z0.000 D2.500   ; 2.5mm drill
+T102 Z0.000 D3.000   ; 3mm drill
+T103 Z0.000 D3.500   ; 3.5mm drill
+T104 Z0.000 D4.000   ; 4mm drill
+T105 Z0.000 D4.500   ; 4.5mm drill
+T106 Z0.000 D5.000   ; 5mm drill
+T201 Z0.000 D1.000   ; 4mm 1FLT CRB Tapered Bull Nose Endmill
+T356 Z0.000 D3.000   ; 3.1mm 1FLT CRB (diam for test)
+T0   Z0.000 D4.000   ; 4mm drill (unassigned NC number)
+T0   Z0.000 D8.000   ; 8mm drill (unassigned NC number)

@@ -30,6 +30,9 @@ o10 if [#4904 EQ 1]
   (print, ATC: tc.macro called for M61 -- skipping)
 o10 else
 
+; disable atci
+M960 P0
+
   (print, ATC: tool change T[#4900] -> T[#4902])
   (print, ATC: outgoing pocket=[#4901] incoming pocket=[#4903])
 
@@ -78,6 +81,9 @@ o10 else
   o125 if [#4902 NE 0]
     G65 P394
   o125 endif
+
+; enable atci
+M960 P1
 
   (print, ATC: tool change complete -- T[#4902] active)
 
