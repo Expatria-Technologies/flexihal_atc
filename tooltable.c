@@ -767,44 +767,51 @@ static void onToolChanged (tool_data_t *tool)
 
 static void onToolSelect (tool_data_t *tool, bool next)
 {
-    char buf[128];
-    sprintf(buf, "[onToolSelect: tool_id=%u next=%d current_tool=%u gc_state.tool=%u]" ASCII_EOL,
-    tool->tool_id, next, current_tool, gc_state.tool ? gc_state.tool->tool_id : 0);
-    hal.stream.write(buf);
-
+    //char buf[128];
+    //sprintf(buf, "[onToolSelect: tool_id=%u next=%d current_tool=%u gc_state.tool=%u]" ASCII_EOL,
+    //tool->tool_id, next, current_tool, gc_state.tool ? gc_state.tool->tool_id : 0);
+    //hal.stream.write(buf);
+ 
     if(!next) {
         current_tool = tool->tool_id;
         ngc_param_set(4904, 1.0f);      // M61 signal: not a real Txx
     }
-
+ 
     if(next && max_pockets > 0) {
         // Use grblHAL's current tool data directly — reliable on boot
         // since grblHAL restores it from persistent storage before we run
         tool_id_t outgoing_id = gc_state.tool ? gc_state.tool->tool_id : 0;
-
+ 
         // Look up outgoing pocket directly from file — permanent assignment
         tool_pocket_t outgoing;
         pocket_id_t outgoing_pocket = -1;
         if(outgoing_id > 0 && file_find(outgoing_id, &outgoing) && outgoing.pocket_id >= 1)
             outgoing_pocket = outgoing.pocket_id;
-
+ 
         // Look up incoming pocket directly from file
         tool_pocket_t incoming;
         pocket_id_t incoming_pocket = -1;
         if(file_find(tool->tool_id, &incoming) && incoming.pocket_id >= 1)
             incoming_pocket = incoming.pocket_id;
-
+ 
+        // Report incoming tool ID and name to operator
+        char buf[80];
+        if(incoming.name[0] != '\0')
+            snprintf(buf, sizeof(buf), "T%ld: %s" ASCII_EOL, (long)tool->tool_id, incoming.name);
+        else
+            snprintf(buf, sizeof(buf), "T%ld" ASCII_EOL, (long)tool->tool_id);
+        report_message(buf, Message_Info);
+ 
         ngc_param_set(4900, (float)outgoing_id);
         ngc_param_set(4901, (float)outgoing_pocket);
         ngc_param_set(4902, (float)tool->tool_id);
         ngc_param_set(4903, (float)incoming_pocket);
         ngc_param_set(4904, 0.0f);      // signal: real Txx pre-selection
     }
-
+ 
     if(tool_select)
         tool_select(tool, next);
 }
-
 
 // $TTLIST - print tool table to console directly from file.
 // ---------------------------------------------------------------------------
@@ -1045,16 +1052,68 @@ static status_code_t delete_tool (sys_state_t state, char *args)
     }
 }
 
+// $TTCLR [Tn] — Clear the length offset for a tool in the tooltable.
+// If no tool number is given, clears the offset for the current spindle tool.
+// ---------------------------------------------------------------------------
+static status_code_t clear_tool_offset (sys_state_t state, char *args)
+{
+    if(state_get() != STATE_IDLE) {
+        report_message("TTCLR: machine must be IDLE", Message_Warning);
+        return Status_InvalidStatement;
+    }
+
+    uint32_t tool_id;
+
+    if(!args || !*args) {
+        if(!gc_state.tool || gc_state.tool->tool_id == 0) {
+            report_message("TTCLR: no tool in spindle and no tool number given", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        tool_id = (uint32_t)gc_state.tool->tool_id;
+    } else {
+        if(*args != 'T' && *args != 't') {
+            report_message("TTCLR: usage is $TTCLR [Tn]", Message_Warning);
+            return Status_BadNumberFormat;
+        }
+        uint_fast8_t cc = 1;
+        status_code_t parse_status = read_uint(args, &cc, &tool_id);
+        if(parse_status != Status_OK) {
+            report_message("TTCLR: invalid tool number", Message_Warning);
+            return parse_status;
+        }
+    }
+
+    tool_pocket_t existing;
+    if(!file_find((tool_id_t)tool_id, &existing)) {
+        report_message("TTCLR: tool not found in tooltable", Message_Warning);
+        return Status_GcodeValueOutOfRange;
+    }
+
+    memset(&existing.tool.offset, 0, sizeof(existing.tool.offset));
+
+    if(!grbl.tool_table.set_tool(&existing.tool)) {
+        report_message("TTCLR: failed to write tool table", Message_Warning);
+        return Status_FileReadError;
+    }
+
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Tool %lu offset cleared", (unsigned long)tool_id);
+    report_message(msg, Message_Info);
+
+    return Status_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 void tooltable_init (void)
 {
     static const sys_command_t tt_command_list[] = {
-        { "TTLOAD",  load_tools,     {}, { .str = "(re)load tool table from SD card" } },
-        { "TTLIST",  list_tools,     {}, { .str = "List all tools in the tool table" } },
-        { "TTREG",   register_tool,  {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn[,name]" } },
-        { "TTDEL",   delete_tool,    {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL=Tn" } }
+        { "TTLOAD",  load_tools,        {}, { .str = "(re)load tool table from SD card" } },
+        { "TTLIST",  list_tools,        {}, { .str = "List all tools in the tool table" } },
+        { "TTREG",   register_tool,     {}, { .str = "Register a tool at P0 in the tooltable: $TTREG=Tn[,name]" } },
+        { "TTDEL",   delete_tool,       {}, { .str = "Delete a P0 tool entry from the tooltable: $TTDEL=Tn" } },
+        { "TTCLR",   clear_tool_offset, {}, { .str = "Clear length offset for a tool: $TTCLR [Tn]" } }
     };
 
     static sys_commands_t tt_commands = {
