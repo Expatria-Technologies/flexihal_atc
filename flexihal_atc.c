@@ -364,11 +364,17 @@ static status_code_t carousel_add (sys_state_t state, char *args)
     ngc_param_set(4905, 1.0f);  // signal P391 to fire M61Q0
     ngc_param_set(4906, 0.0f);   // open, rotate, close (standalone deposit)
 
+    grbl.enqueue_gcode("M960P0");
+    grbl.enqueue_gcode("G4P0");
+
     if(!grbl.enqueue_gcode("G65P391")) {
         tooltable_carousel_remove((tool_id_t)tool_id);
         report_message("TCADD: failed to enqueue deposit motion -- pocket assignment rolled back", Message_Warning);
         return Status_EStop;
     }
+
+    grbl.enqueue_gcode("M960P1");
+    grbl.enqueue_gcode("G4P0");    
 
     return Status_OK;
 }
@@ -464,10 +470,16 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
         return Status_GcodeValueOutOfRange;
     }
 
+    grbl.enqueue_gcode("M960P0");
+    grbl.enqueue_gcode("G4P0");
+
     if(!grbl.enqueue_gcode("G65P394")) {
         report_message("TCMEASURE: failed to enqueue measure macro", Message_Warning);
         return Status_EStop;
     }
+
+    grbl.enqueue_gcode("M960P1");
+    grbl.enqueue_gcode("G4P0");
 
     return Status_OK;
 }
@@ -496,10 +508,16 @@ static status_code_t carousel_remeasure (sys_state_t state, char *args)
     memset(&tool.offset, 0, sizeof(tool.offset));
     grbl.tool_table.set_tool(&tool);
 
+    grbl.enqueue_gcode("M960P0");
+    grbl.enqueue_gcode("G4P0");
+
     if(!grbl.enqueue_gcode("G65P394")) {
         report_message("TCREMEASURE: failed to enqueue measure macro", Message_Warning);
         return Status_EStop;
     }
+
+    grbl.enqueue_gcode("M960P1");
+    grbl.enqueue_gcode("G4P0");
 
     return Status_OK;
 }
