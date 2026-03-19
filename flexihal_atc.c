@@ -107,6 +107,7 @@ static probe_configure_ptr on_probe_configure = NULL;
 static spindle_set_state_ptr on_spindle_set_state = NULL;
 static driver_reset_ptr driver_reset = NULL;
 static on_report_options_ptr on_report_options;
+static on_macro_return_ptr on_macro_return = NULL;
 
 static bool is_away = false;
 
@@ -116,6 +117,8 @@ static char max_in_port[4]  = "0";
 static char max_out_port[4] = "0";
 
 static atc_ports_t active_ports;
+
+extern void atci_set_keepout_enabled(bool enabled);
 
 static void read_atc_ports(void);
 
@@ -265,6 +268,18 @@ status_code_t drawbar_close (sys_state_t state, char *args)
 
 #if TOOLTABLE_ENABLE == 2
 
+static void macro_exit (void)
+{
+    
+    atci_set_keepout_enabled(true);
+    
+    grbl.on_macro_return = on_macro_return;  // restore original hook
+    on_macro_return = NULL;                   // clear our saved pointer
+
+    if(grbl.on_macro_return)                  // call original if it existed
+        grbl.on_macro_return();
+}
+
 // $TCADD [Tn] [;name]  — Deposit the current spindle tool into the next free
 // carousel pocket and register it in the tooltable.
 //
@@ -330,7 +345,7 @@ static status_code_t carousel_add (sys_state_t state, char *args)
         report_message("TCADD: spindle must be off", Message_Warning);
         return Status_GcodeValueOutOfRange;
     }
-
+    
     // ── Assign pocket in tooltable ───────────────────────────────────────────
     pocket_id_t assigned_pocket = 0;
     carousel_op_result_t result = tooltable_carousel_add((tool_id_t)tool_id, atc.number_of_pockets, name, &assigned_pocket);
@@ -364,17 +379,15 @@ static status_code_t carousel_add (sys_state_t state, char *args)
     ngc_param_set(4905, 1.0f);  // signal P391 to fire M61Q0
     ngc_param_set(4906, 0.0f);   // open, rotate, close (standalone deposit)
 
-    grbl.enqueue_gcode("M960P0");
-    grbl.enqueue_gcode("G4P0");
-
+    atci_set_keepout_enabled(false);
+    on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = macro_exit;
+    
     if(!grbl.enqueue_gcode("G65P391")) {
         tooltable_carousel_remove((tool_id_t)tool_id);
         report_message("TCADD: failed to enqueue deposit motion -- pocket assignment rolled back", Message_Warning);
         return Status_EStop;
     }
-
-    grbl.enqueue_gcode("M960P1");
-    grbl.enqueue_gcode("G4P0");    
 
     return Status_OK;
 }
@@ -470,16 +483,14 @@ static status_code_t carousel_measure (sys_state_t state, char *args)
         return Status_GcodeValueOutOfRange;
     }
 
-    grbl.enqueue_gcode("M960P0");
-    grbl.enqueue_gcode("G4P0");
+    atci_set_keepout_enabled(false);
+    on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = macro_exit;
 
     if(!grbl.enqueue_gcode("G65P394")) {
         report_message("TCMEASURE: failed to enqueue measure macro", Message_Warning);
         return Status_EStop;
     }
-
-    grbl.enqueue_gcode("M960P1");
-    grbl.enqueue_gcode("G4P0");
 
     return Status_OK;
 }
@@ -508,16 +519,14 @@ static status_code_t carousel_remeasure (sys_state_t state, char *args)
     memset(&tool.offset, 0, sizeof(tool.offset));
     grbl.tool_table.set_tool(&tool);
 
-    grbl.enqueue_gcode("M960P0");
-    grbl.enqueue_gcode("G4P0");
+    atci_set_keepout_enabled(false);
+    on_macro_return = grbl.on_macro_return;
+    grbl.on_macro_return = macro_exit;
 
     if(!grbl.enqueue_gcode("G65P394")) {
         report_message("TCREMEASURE: failed to enqueue measure macro", Message_Warning);
         return Status_EStop;
     }
-
-    grbl.enqueue_gcode("M960P1");
-    grbl.enqueue_gcode("G4P0");
 
     return Status_OK;
 }
@@ -581,7 +590,6 @@ static void atc_poll (void *data)
     if((prev_val == 0) && (val == 0) && (latch == 0)) {
         if(zero_count >= DEBOUNCE_THRESHOLD) {
             latch = 1;
-            //grbl.enqueue_gcode("$DRBO");
             drawbar_open(state_get(), NULL);
             zero_count = 0;
         }
@@ -589,7 +597,6 @@ static void atc_poll (void *data)
               (zero_count >= ZERO_THRESHOLD)) {
         if(one_count >= 1 || zero_count >= ZERO_THRESHOLD) {
             latch = 0;
-            //grbl.enqueue_gcode("$DRBC");
             drawbar_close(state_get(), NULL);
             one_count  = 0;
             zero_count = 0;
@@ -681,6 +688,7 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
     if(at_g59_3 && on) {
         report_message("ATC tool probe", Message_Info);
+        //if(atc.flags.tlo_clear_active && !is_away) {
         if(atc.flags.tlo_clear_active && !is_away) {
             hal.port.digital_out(active_ports.tlo_clear, 1);
             hal.delay_ms(atc.drawbar_delay, NULL);
