@@ -1,0 +1,7 @@
+; P391.macro STUB — return simulation
+(print, STUB P391: returning T#4900 to pocket #4901)
+o200 if [#4905 EQ 1]
+  #4905 = 0
+  M61 Q0
+o200 endif
+M99

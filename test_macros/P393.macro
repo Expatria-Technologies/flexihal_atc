@@ -1,0 +1,4 @@
+; P393.macro STUB — hand return simulation
+(print, STUB P393: remove T#4900 -- press cycle start)
+M0
+M99

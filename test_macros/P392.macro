@@ -1,0 +1,4 @@
+; P392.macro STUB — hand fetch simulation
+(print, STUB P392: install T#4902 -- press cycle start)
+M0
+M99

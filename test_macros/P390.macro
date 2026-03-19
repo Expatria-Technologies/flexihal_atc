@@ -1,0 +1,3 @@
+; P390.macro STUB — fetch simulation
+(print, STUB P390: fetching T#4900 from pocket #4901)
+M99

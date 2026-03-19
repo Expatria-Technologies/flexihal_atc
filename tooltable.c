@@ -432,10 +432,17 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         }
     }
 
-    // Not found — evict next slot in round-robin order
+    // Not found — evict next slot in round-robin order, but never evict
+    // the slot currently backing gc_state.tool
     if(slot == -1) {
-        slot = next_slot;
-        next_slot = (next_slot + 1) % TOOL_CACHE_SIZE;
+        uint8_t attempts = 0;
+        do {
+            slot = next_slot;
+            next_slot = (next_slot + 1) % TOOL_CACHE_SIZE;
+            attempts++;
+        } while(attempts < TOOL_CACHE_SIZE && 
+                gc_state.tool && 
+                cache_entry[slot].tool.tool_id == gc_state.tool->tool_id);
     }
 
     cache_result[slot] = (tool_table_entry_t){0};

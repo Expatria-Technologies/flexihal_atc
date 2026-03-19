@@ -1,0 +1,15 @@
+; P394.macro STUB — measure simulation (no probing)
+(print, STUB P394: simulating measurement for T#5400)
+o100 if [#5400 EQ 0]
+  (abort, STUB P394: no tool selected)
+o100 endif
+G65 P2 Q#5400 R2
+o110 if [#<_value> NE 0]
+  (print, STUB P394: T#5400 already measured -- activating stored offset)
+  G43 H#5400
+o110 else
+  G10 L1 P#5400 Z-50.000
+  G43 H#5400
+  (print, STUB P394: stored dummy offset Z-50.000 for T#5400)
+o110 endif
+M99

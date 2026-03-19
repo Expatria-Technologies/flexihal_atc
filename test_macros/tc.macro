@@ -1,0 +1,97 @@
+; tc.macro — Random-access tool change orchestrator for FlexiHAL ATC
+;
+; Called by grblHAL on M6 after tooltable.c has set the following parameters
+; via onToolSelect:
+;   #4900 = outgoing tool ID  (0 if spindle was empty)
+;   #4901 = outgoing pocket   (-1 if hand-loaded)
+;   #4902 = incoming tool ID  (0 = T0, empty spindle)
+;   #4903 = incoming pocket   (-1 if hand-loaded)
+;   #4904 = 0 if called from a real Txx, 1 if called from M61
+;
+; Subroutines:
+;   /P390.macro  — fetch carousel tool    (#4900=tool_id, #4901=pocket)
+;   /P391.macro  — return carousel tool   (#4900=tool_id, #4901=pocket)
+;   /P392.macro  — hand fetch             (M0 pause, operator installs tool)
+;   /P393.macro  — hand return            (M0 pause, operator removes tool)
+;   /P394.macro  — measure tool length    (skips if already measured, handles T0)
+;
+; Prerequisites:
+;   - Machine homed
+;   - Spindle and coolant off
+;
+; Note: macros.c fires tc.macro on M61 as well as M6. The o10 guard detects
+; this case (#4902 EQ #4900 means parameters were not updated by onToolSelect)
+; and skips the tool change body entirely.
+
+(print, ATC: tool change tc.macro)
+(print, ATC: #4900=#4900 #4901=#4901 #4902=#4902 #4903=#4903 #4904=#4904)
+
+o10 if [#4904 EQ 1]
+  (print, ATC: tc.macro called for M61 -- skipping)
+o10 else
+
+; disable atci
+M960 P0
+G4P0
+
+  (print, ATC: tool change T[#4900] -> T[#4902])
+  (print, ATC: outgoing pocket=[#4901] incoming pocket=[#4903])
+
+; ── Step 1: Return outgoing tool ───────────────────────────────────────────
+  o100 if [#4900 NE 0]
+    o110 if [#4901 GE 1]
+      o115 if [#4903 GE 1]                  ; fetch+return — leave carousel open
+        #4906 = 1
+      o115 else                             ; return only
+        #4906 = 0
+      o115 endif
+      G65 P391
+    o110 else
+      G65 P393
+    o110 endif
+  o100 endif
+
+  ; ── Step 2: Fetch incoming tool ────────────────────────────────────────────
+  o120 if [#4902 EQ 0]
+    (print, ATC: T0 requested -- spindle will be empty)
+  o120 elseif [#4903 GE 1]
+    #4900 = #4902
+    #4901 = #4903
+    o121 if [#4906 EQ 1]                    ; carousel was left open by P391
+      #4906 = 2
+    o121 else
+      #4906 = 0                             ; fetch only
+    o121 endif
+    (print, ATC: fetching T[#4900] from pocket [#4901] #4906=[#4906])
+	G65 P390
+  o120 else
+    G65 P392
+  o120 endif
+
+  ; ── Step 3: Update current tool ────────────────────────────────────────────
+  ; M61 fires gc_tool_changed() which calls grbl.on_tool_changed,
+  (print, ATC: after P390 -- #4902=#4902 #4903=#4903)  
+  #4904 = 1 ; set Txx flag before M61
+  (print, ATC: about to M61 Q#4902)
+  M61 Q#4902
+  G4P0
+  (print, ATC: after M61 -- #4902=#4902 #4903=#4903)
+  
+    ; ── Step 4: Measure incoming tool (skips T0 and already-measured tools) ───
+  o125 if [#4902 NE 0]
+    G65 P394
+  o125 endif
+
+; ── Move to manual change position G30 (Outside ATCI) ─────────────────────────────────────
+G53 G0 Z0
+G53 G0 X#5181                               ; G30 X only — Y unchanged
+
+; enable atci
+M960 P1
+G4P0
+
+  (print, ATC: tool change complete -- T[#4902] active)
+
+o10 endif
+
+M99
