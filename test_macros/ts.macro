@@ -12,12 +12,11 @@
 
 o100 if [#4904 EQ 0]
   o110 if [#4903 GE 1]
-    (print, ATC: T[#4902] selected -- in carousel pocket [#4903])
+    (print, ATC: T#4902 selected -- in carousel pocket [#4903])
   o110 else
-    (print, ATC: T[#4902] selected -- hand-loaded)
+    (print, ATC: T#4902 selected -- hand-loaded)
   o110 endif
 o100 else
-  G4P0
 o100 endif
 M99
 

@@ -94,7 +94,7 @@ o110 else
 
   ; ── 10. Slow locate probe — G38.4 (probe away, error if no loss of contact) ───
   G91
-  G38.4 Z[#4933] F#4934
+  G38.4 Z[#4936] F#4934
   G90
   G4P0
 
