@@ -518,26 +518,10 @@ static tool_table_entry_t *getToolByIdx (uint32_t idx)
     return &result;
 }
 
-// ---------------------------------------------------------------------------
-// grbl.tool_table.set_tool - update offsets for an existing tool in the file.
-// Streams through the file line by line with no heap allocation.
-// ---------------------------------------------------------------------------
-static bool setTool (tool_data_t *tool_data)
+//deferred set tool.
+static bool set_tool_write (tool_data_t *tool_data)
 {
-    if(!tool_data)
-        return false;
-
-    // Use gc_state.tool->tool_id as authoritative — cache slot may have been evicted
-    tool_id_t tool_id = (gc_state.tool && gc_state.tool->tool_id > 0) 
-                        ? gc_state.tool->tool_id 
-                        : tool_data->tool_id;
-
-    if(tool_id <= 0)
-        return false;
-
-    char buf[80];
-    sprintf(buf, "[setTool: tool_id=%ld Z=%.3f]\n", (long)tool_id, tool_data->offset.values[Z_AXIS]);
-    hal.stream.write(buf);
+    tool_id_t tool_id = tool_data->tool_id;
 
     vfs_file_t *src = vfs_open(filename, "r");
     if(!src)
@@ -556,7 +540,6 @@ static bool setTool (tool_data_t *tool_data)
         if(!parse_line(line, &entry))
             continue;
         if(entry.tool.tool_id == tool_id) {
-            // Preserve pocket, name and radius — only update offsets
             memcpy(entry.tool.offset.values, tool_data->offset.values, sizeof(tool_data->offset.values));
             entry.tool.radius = tool_data->radius;
         }
@@ -573,6 +556,63 @@ static bool setTool (tool_data_t *tool_data)
     }
 
     return true;
+}
+
+static tool_data_t      pending_set_tool     = {0};
+static bool             pending_set_tool_valid = false;
+static on_macro_return_ptr on_set_return   = NULL;
+
+static void deferred_set_tool (void)
+{
+    grbl.on_macro_return = on_set_return;
+    on_set_return = NULL;
+
+    if(pending_set_tool_valid) {
+        pending_set_tool_valid = false;
+
+        tool_pocket_t existing;
+        if(file_find(pending_set_tool.tool_id, &existing)) {
+            // Tool exists — update offsets in place
+            set_tool_write(&pending_set_tool);
+        } else {
+            // Tool doesn't exist yet — append with offsets already set
+            tool_pocket_t newentry = {0};
+            newentry.tool          = pending_set_tool;
+            newentry.pocket_id     = 0;
+            append_tool(&newentry);
+        }
+    }
+
+    if(grbl.on_macro_return)
+        grbl.on_macro_return();
+}
+
+
+static bool setTool (tool_data_t *tool_data)
+{
+    if(!tool_data)
+        return false;
+
+    tool_id_t tool_id = (gc_state.tool && gc_state.tool->tool_id > 0)
+                        ? gc_state.tool->tool_id
+                        : tool_data->tool_id;
+
+    if(tool_id <= 0)
+        return false;
+
+    tool_data_t data_to_write = *tool_data;
+    data_to_write.tool_id = tool_id;
+
+    if(hal.stream.file != NULL) {
+        // Macro is running — defer the write
+        pending_set_tool       = data_to_write;
+        pending_set_tool_valid = true;
+        on_set_return        = grbl.on_macro_return;
+        grbl.on_macro_return   = deferred_set_tool;
+        return true;
+    }
+
+    return set_tool_write(&data_to_write);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,12 +807,35 @@ carousel_op_result_t tooltable_delete (tool_id_t tool_id)
 // Registers new tools automatically and updates current_tool.
 // Pocket assignments are permanent — managed explicitly via $TCADD/$TCRM.
 // ---------------------------------------------------------------------------
+static tool_id_t pending_register_tool = 0;
+static on_macro_return_ptr on_changed_return   = NULL;
+
+static void deferred_register_tool (void)
+{
+    grbl.on_macro_return = on_changed_return;
+    on_changed_return = NULL;
+
+    if(pending_register_tool > 0) {
+        tool_id_t tool_id = pending_register_tool;
+        pending_register_tool = 0;
+        tooltable_register_tool(tool_id, NULL);
+    }
+
+    if(grbl.on_macro_return)
+        grbl.on_macro_return();
+}
+
 static void onToolChanged (tool_data_t *tool)
 {
-    // Ensure incoming tool has a table entry.
-    // tooltable_register_tool() handles the "already exists" case gracefully.
-    if(fs_available && tool->tool_id > 0)
-        tooltable_register_tool(tool->tool_id, NULL);
+    if(fs_available && tool->tool_id > 0) {
+        if(hal.stream.file != NULL) {
+            pending_register_tool = tool->tool_id;
+            on_changed_return       = grbl.on_macro_return;
+            grbl.on_macro_return  = deferred_register_tool;
+        } else {
+            tooltable_register_tool(tool->tool_id, NULL);
+        }
+    }
 
     current_tool = tool->tool_id;
 
