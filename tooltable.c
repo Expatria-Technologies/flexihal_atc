@@ -466,8 +466,6 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         return &cache_result[slot];
     }   
 
-    tooltable_register_tool(tool_id, NULL);
-
     cache_unknown[slot] = (tool_data_t){0};
     cache_unknown[slot].tool_id = tool_id;
     cache_result[slot].data   = &cache_unknown[slot];
@@ -526,12 +524,20 @@ static tool_table_entry_t *getToolByIdx (uint32_t idx)
 // ---------------------------------------------------------------------------
 static bool setTool (tool_data_t *tool_data)
 {
-    char buf[80];
-    sprintf(buf, "[setTool: tool_id=%ld Z=%.3f]\n", (long)tool_data->tool_id, tool_data->offset.values[Z_AXIS]);
-    hal.stream.write(buf);
-    
-    if(!tool_data || tool_data->tool_id < 0)
+    if(!tool_data)
         return false;
+
+    // Use gc_state.tool->tool_id as authoritative — cache slot may have been evicted
+    tool_id_t tool_id = (gc_state.tool && gc_state.tool->tool_id > 0) 
+                        ? gc_state.tool->tool_id 
+                        : tool_data->tool_id;
+
+    if(tool_id <= 0)
+        return false;
+
+    char buf[80];
+    sprintf(buf, "[setTool: tool_id=%ld Z=%.3f]\n", (long)tool_id, tool_data->offset.values[Z_AXIS]);
+    hal.stream.write(buf);
 
     vfs_file_t *src = vfs_open(filename, "r");
     if(!src)
@@ -549,9 +555,11 @@ static bool setTool (tool_data_t *tool_data)
     while(read_line(src, line, sizeof(line))) {
         if(!parse_line(line, &entry))
             continue;
-        // Replace offset data for the matching tool; preserve pocket and name
-        if(entry.tool.tool_id == tool_data->tool_id)
-            memcpy(&entry.tool, tool_data, sizeof(tool_data_t));
+        if(entry.tool.tool_id == tool_id) {
+            // Preserve pocket, name and radius — only update offsets
+            memcpy(entry.tool.offset.values, tool_data->offset.values, sizeof(tool_data->offset.values));
+            entry.tool.radius = tool_data->radius;
+        }
         write_pocket_line(dst, &entry);
     }
 
