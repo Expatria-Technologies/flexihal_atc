@@ -7,6 +7,9 @@
 ;   #4902 = incoming tool ID  (0 = T0, empty spindle)
 ;   #4903 = incoming pocket   (-1 if hand-loaded)
 ;   #4904 = 0 if called from a real Txx, 1 if called from M61
+;   #4905 = 1 to fire M61Q0 at end of P391 (called from $TCADD/$TCRETURN)
+;   #4906 = carousel open/close mode for P390/P391
+;   #4908 = 1 if P393 should skip M0 (combined hand→hand swap, P392 handles single pause)
 ;
 ; Subroutines:
 ;   /P390.macro  — fetch carousel tool    (#4900=tool_id, #4901=pocket)
@@ -46,7 +49,12 @@ G4P0
         #4906 = 0
       o115 endif
       G65 P391
-    o110 else
+    o110 else                               ; outgoing tool is hand-loaded
+      o116 if [#4903 LT 1 AND #4902 NE 0]  ; incoming also hand-loaded — combined swap
+        #4908 = 1                           ; signal P393 to skip M0
+      o116 else
+        #4908 = 0
+      o116 endif
       G65 P393
     o110 endif
   o100 endif
@@ -63,26 +71,26 @@ G4P0
       #4906 = 0                             ; fetch only
     o121 endif
     (print, ATC: fetching T[#4900] from pocket [#4901] #4906=[#4906])
-	G65 P390
+    G65 P390
   o120 else
     G65 P392
   o120 endif
 
   ; ── Step 3: Update current tool ────────────────────────────────────────────
   ; M61 fires gc_tool_changed() which calls grbl.on_tool_changed,
-  (print, ATC: after P390 -- #4902=#4902 #4903=#4903)  
+  (print, ATC: after P390 -- #4902=#4902 #4903=#4903)
   #4904 = 1 ; set Txx flag before M61
   (print, ATC: about to M61 Q#4902)
   M61 Q#4902
   G4P0
   (print, ATC: after M61 -- #4902=#4902 #4903=#4903)
-  
-    ; ── Step 4: Measure incoming tool (skips T0 and already-measured tools) ───
+
+  ; ── Step 4: Measure incoming tool (skips T0 and already-measured tools) ───
   o125 if [#4902 NE 0]
     G65 P394
   o125 endif
 
-; ── Move to manual change position G30 (Outside ATCI) ─────────────────────────────────────
+; ── Move to manual change position G30 (Outside ATCI) ────────────────────────
 G53 G0 Z0
 G53 G0 X#5181                               ; G30 X only — Y unchanged
 

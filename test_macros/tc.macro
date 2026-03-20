@@ -47,6 +47,11 @@ G4P0
       o115 endif
       G65 P391
     o110 else
+      o116 if [#4903 LT 1 AND #4902 NE 0]  ; incoming also hand-loaded — combined swap
+        #4908 = 1                           ; signal P393 to skip M0
+      o116 else
+        #4908 = 0
+      o116 endif
       G65 P393
     o110 endif
   o100 endif
