@@ -715,6 +715,30 @@ static void probeConfigure (bool is_probe_away, bool probing)
     
 }
 
+static tool_change_ptr on_tool_change = NULL;
+
+static status_code_t atc_tool_change (parser_state_t *gc_state)
+{
+    coolant_state_t mode = {0};
+
+    // Wait for spindle to stop
+    spindle_all_off(false);
+    coolant_set_state(mode);
+    spindle_ptrs_t *spindle = spindle_get(0);
+    if(spindle && spindle->get_data) {
+        uint32_t ms = hal.get_elapsed_ticks();
+        while(spindle->get_data(SpindleData_RPM)->rpm > 0.0f) {
+            if(hal.get_elapsed_ticks() - ms > 20000) {  // 20 second timeout
+                report_message("ATC: spindle did not stop -- tool change aborted", Message_Warning);
+                return Status_EStop;
+            }
+            hal.delay_ms(100, NULL);
+        }
+    }
+
+    return on_tool_change ? on_tool_change(gc_state) : Status_Unhandled;
+}
+
 // ===========================================================================
 // SETTINGS
 // ===========================================================================
@@ -899,6 +923,9 @@ void atc_init (void)
 
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;
+
+    on_tool_change   = hal.tool.change;
+    hal.tool.change  = atc_tool_change;
 
     system_register_commands(&atc_commands);
     task_add_delayed(atc_poll, NULL, 1000);
