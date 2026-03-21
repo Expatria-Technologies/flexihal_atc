@@ -230,6 +230,20 @@ static bool file_find (tool_id_t tool_id, tool_pocket_t *out)
     }
 
     vfs_close(file);
+
+    char buf[120];
+    if(found)
+        sprintf(buf, "[file_find: T%ld P%d X%.3f Y%.3f Z%.3f D%.3f]\n",
+                (long)tool_id,
+                (int)(out ? out->pocket_id : entry.pocket_id),
+                entry.tool.offset.values[X_AXIS],
+                entry.tool.offset.values[Y_AXIS],
+                entry.tool.offset.values[Z_AXIS],
+                entry.tool.radius * 2.0f);
+    else
+        sprintf(buf, "[file_find: T%ld not found]\n", (long)tool_id);
+    hal.stream.write(buf);
+
     return found;
 }
 
