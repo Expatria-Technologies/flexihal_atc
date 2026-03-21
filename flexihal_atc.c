@@ -688,6 +688,7 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
     if(at_g59_3 && on) {
         report_message("ATC tool probe", Message_Info);
+        is_away = false;
         //if(atc.flags.tlo_clear_active && !is_away) {
         if(atc.flags.tlo_clear_active && !is_away) {
             hal.port.digital_out(active_ports.tlo_clear, 1);
@@ -704,10 +705,13 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
 static void probeConfigure (bool is_probe_away, bool probing)
 {
-    is_away = is_probe_away;
-    
     if(on_probe_configure)
         on_probe_configure(is_probe_away, probing);
+    
+    if(probing)
+        is_away = false;  // reset at start of new probe cycle
+    
+    is_away = is_probe_away;
     
 }
 

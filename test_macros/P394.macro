@@ -11,5 +11,7 @@ o110 else
   G10 L1 P#5400 Z-50.000
   G43 H#5400
   (print, STUB P394: stored dummy offset Z-50.000 for T#5400)
+   G65 P2 Q#5400 R2
+  (print, ATC: tool #5400 measured -- offset Z#<_value> stored)
 o110 endif
 M99
