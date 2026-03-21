@@ -94,19 +94,19 @@ o110 else
 
   ; ── 10. Slow locate probe — G38.4 (probe away, error if no loss of contact) ───
   G91
-  G38.4 Z[#4933] F#4934
+  G38.4 Z[#4936] F#4934
   G90
   G4P0
 
   ; ── 11. Store gauge length in tool table ───────────────────────────────────
   (print, ATC: probe Z=#5063 abs_z=#<_abs_z> G59.3_Z=#5383 tool=#5400)
-  ;G10 L11 P#5400 Z[#<_abs_z> - #5383]
-  G10 L1 P#5400 Z[#5063 - #5383]
-  G65 P2 Q#5400 R2
-  (print, ATC: post-G10 offset=#<_value>)
+
+  G10 L1 P#5400 Z[#<_abs_z> - #5383]
 
   ; ── 12. Activate tool length offset ────────────────────────────────────────
   G43 H#5400
+  G65 P2 Q#5400 R2
+  (print, ATC: post-G10 offset=#<_value>)  
 
   G65 P2 Q#5400 R2
   (print, ATC: tool #5400 measured -- offset Z#<_value> stored)

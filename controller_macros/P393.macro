@@ -5,12 +5,19 @@
 ;
 ; Parameters:
 ;   #4900 = outgoing tool number
+;   #4908 = 1 if called as part of a combined hand→hand swap (skip M0, P392 handles single pause)
 
 ; ── Move to manual change position (G30) ─────────────────────────────────────
 G53 G0 Z0
 G53 G0 X#5181                               ; G30 X only — Y unchanged
 
 ; ── Notify operator ───────────────────────────────────────────────────────────
-(print, ATC: remove tool #4900 and press cycle start)
-M0
+o100 if [#4908 EQ 1]
+  #4908 = 0
+  (print, ATC: remove T#4900 and install T#4902 then press cycle start)
+o100 else
+  (print, ATC: remove tool #4900 and press cycle start)
+  M0
+o100 endif
+
 M99

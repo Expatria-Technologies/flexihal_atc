@@ -1,4 +1,9 @@
 ; P393.macro STUB — hand return simulation
-(print, STUB P393: remove T#4900 -- press cycle start)
-M0
+o100 if [#4908 EQ 1]
+  #4908 = 0
+  (print, STUB P393: remove T#4900 and install T#4902 then press cycle start)
+o100 else
+  (print, STUB P393: remove T#4900 -- press cycle start)
+  M0
+o100 endif
 M99

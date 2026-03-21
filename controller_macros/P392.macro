@@ -2,6 +2,8 @@
 ;
 ; Called after the outgoing tool has been returned (if applicable).
 ; Pauses for the operator to install the incoming hand-loaded tool.
+; In a combined hand→hand swap, P393 has already notified the operator to remove
+; the outgoing tool — this pause covers the install of the incoming tool.
 ;
 ; Parameters:
 ;   #4902 = incoming tool number
