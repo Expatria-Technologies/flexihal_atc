@@ -688,6 +688,7 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
     if(at_g59_3 && on) {
         report_message("ATC tool probe", Message_Info);
+        is_away = false;
         //if(atc.flags.tlo_clear_active && !is_away) {
         if(atc.flags.tlo_clear_active && !is_away) {
             hal.port.digital_out(active_ports.tlo_clear, 1);
@@ -704,11 +705,38 @@ static bool probe_fixture (tool_data_t *tool, coord_data_t *position, bool at_g5
 
 static void probeConfigure (bool is_probe_away, bool probing)
 {
-    is_away = is_probe_away;
-    
     if(on_probe_configure)
         on_probe_configure(is_probe_away, probing);
     
+    if(probing)
+        is_away = false;  // reset at start of new probe cycle
+    
+    is_away = is_probe_away;
+    
+}
+
+static tool_change_ptr on_tool_change = NULL;
+
+static status_code_t atc_tool_change (parser_state_t *gc_state)
+{
+    coolant_state_t mode = {0};
+
+    // Wait for spindle to stop
+    spindle_all_off(false);
+    coolant_set_state(mode);
+    spindle_ptrs_t *spindle = spindle_get(0);
+    if(spindle && spindle->get_data) {
+        uint32_t ms = hal.get_elapsed_ticks();
+        while(spindle->get_data(SpindleData_RPM)->rpm > 0.0f) {
+            if(hal.get_elapsed_ticks() - ms > 20000) {  // 20 second timeout
+                report_message("ATC: spindle did not stop -- tool change aborted", Message_Warning);
+                return Status_EStop;
+            }
+            hal.delay_ms(100, NULL);
+        }
+    }
+
+    return on_tool_change ? on_tool_change(gc_state) : Status_Unhandled;
 }
 
 // ===========================================================================
@@ -895,6 +923,9 @@ void atc_init (void)
 
     driver_reset = hal.driver_reset;
     hal.driver_reset = atc_reset;
+
+    on_tool_change   = hal.tool.change;
+    hal.tool.change  = atc_tool_change;
 
     system_register_commands(&atc_commands);
     task_add_delayed(atc_poll, NULL, 1000);

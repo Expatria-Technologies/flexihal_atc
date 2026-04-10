@@ -37,12 +37,7 @@ The tool change sequence is driven by grblHAL's built-in `tc.macro` mechanism. W
 
 ### Pocket Tracking
 
-The tooltable stores the physical state of the carousel — `P0` means the tool is not in the carousel (hand-loaded or in the spindle), `Pn` means the tool is physically in pocket `n`. The tooltable is updated immediately when tools move:
-
-- When a carousel tool is fetched (`P390.macro` completes) → pocket cleared to P0
-- When a carousel tool is returned (`P391.macro` completes) → pocket restored via `tooltable_carousel_add()`
-
-`last_fetched_pocket` is a volatile (RAM-only) variable that remembers which pocket the current spindle tool came from, so it can be returned there on the next tool change. This value is lost on power cycle — the operator can use `$TCRETURN` or `$TCADD` to re-establish the carousel state.
+The tooltable stores the physical state of the carousel — `P0` means the tool is not in the carousel (hand-loaded or in the spindle), `Pn` means the tool is physically in pocket `n`. The tooltable is updated immediately when tools are added with $TCADD or removed with $TCRM.
 
 ## Commands
 

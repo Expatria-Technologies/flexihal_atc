@@ -62,6 +62,10 @@ static on_tool_changed_ptr   on_tool_changed;
 static on_vfs_mount_ptr      on_vfs_mount;
 static on_report_options_ptr on_report_options;
 
+static tool_data_t      pending_set_tool     = {0};
+static bool             pending_set_tool_valid = false;
+static on_macro_return_ptr on_set_return   = NULL;
+
 void tooltable_set_max_pockets (uint16_t n)
 {
     max_pockets = n;
@@ -230,6 +234,20 @@ static bool file_find (tool_id_t tool_id, tool_pocket_t *out)
     }
 
     vfs_close(file);
+/*
+    char buf[120];
+    if(found)
+        sprintf(buf, "[file_find: T%ld P%d X%.3f Y%.3f Z%.3f D%.3f]\n",
+                (long)tool_id,
+                (int)(out ? out->pocket_id : entry.pocket_id),
+                entry.tool.offset.values[X_AXIS],
+                entry.tool.offset.values[Y_AXIS],
+                entry.tool.offset.values[Z_AXIS],
+                entry.tool.radius * 2.0f);
+    else
+        sprintf(buf, "[file_find: T%ld not found]\n", (long)tool_id);
+    hal.stream.write(buf);
+*/
     return found;
 }
 
@@ -424,6 +442,20 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
     static uint8_t next_slot = 0;
     int slot = -1;
 
+    // Check pending deferred write first — most up-to-date offset
+    if(pending_set_tool_valid && pending_set_tool.tool_id == tool_id) {
+        // Use slot 0 for pending tool — stable pointer
+        slot = 0;
+        cache_result[slot] = (tool_table_entry_t){0};
+        cache_entry[slot].tool    = pending_set_tool;
+        cache_entry[slot].pocket_id = 0;
+        cache_entry[slot].name[0] = '\0';
+        cache_result[slot].data   = &cache_entry[slot].tool;
+        cache_result[slot].pocket = 0;
+        cache_result[slot].name   = NULL;
+        return &cache_result[slot];
+    }
+
     // First check if this tool_id is already cached
     for(int i = 0; i < TOOL_CACHE_SIZE; i++) {
         if(cache_result[i].data && cache_result[i].data->tool_id == tool_id) {
@@ -454,10 +486,6 @@ static tool_table_entry_t *getTool (tool_id_t tool_id)
         return &cache_result[slot];
     }
 
-    /*if(!fs_available) {
-        return &(tool_table_entry_t){ .data = &pocket0.tool, .pocket = pocket0.pocket_id, .name = pocket0.name };
-    }
-    */
     if(!fs_available) {
         cache_result[slot] = (tool_table_entry_t){0};
         cache_result[slot].data   = &pocket0.tool;
@@ -558,29 +586,24 @@ static bool set_tool_write (tool_data_t *tool_data)
     return true;
 }
 
-static tool_data_t      pending_set_tool     = {0};
-static bool             pending_set_tool_valid = false;
-static on_macro_return_ptr on_set_return   = NULL;
-
 static void deferred_set_tool (void)
 {
     grbl.on_macro_return = on_set_return;
     on_set_return = NULL;
 
     if(pending_set_tool_valid) {
-        pending_set_tool_valid = false;
-
         tool_pocket_t existing;
         if(file_find(pending_set_tool.tool_id, &existing)) {
-            // Tool exists — update offsets in place
             set_tool_write(&pending_set_tool);
         } else {
-            // Tool doesn't exist yet — append with offsets already set
             tool_pocket_t newentry = {0};
-            newentry.tool          = pending_set_tool;
-            newentry.pocket_id     = 0;
+            newentry.tool      = pending_set_tool;
+            newentry.pocket_id = 0;
             append_tool(&newentry);
         }
+        // Clear after write so subsequent getTool calls read from file
+        pending_set_tool_valid = false;
+        memset(&pending_set_tool, 0, sizeof(pending_set_tool));
     }
 
     if(grbl.on_macro_return)
@@ -590,29 +613,19 @@ static void deferred_set_tool (void)
 
 static bool setTool (tool_data_t *tool_data)
 {
-    if(!tool_data)
+    if(!tool_data || tool_data->tool_id <= 0)
         return false;
-
-    tool_id_t tool_id = (gc_state.tool && gc_state.tool->tool_id > 0)
-                        ? gc_state.tool->tool_id
-                        : tool_data->tool_id;
-
-    if(tool_id <= 0)
-        return false;
-
-    tool_data_t data_to_write = *tool_data;
-    data_to_write.tool_id = tool_id;
 
     if(hal.stream.file != NULL) {
-        // Macro is running — defer the write
-        pending_set_tool       = data_to_write;
+        // Macro is running — defer the write, serve from pending until written
+        pending_set_tool       = *tool_data;
         pending_set_tool_valid = true;
-        on_set_return        = grbl.on_macro_return;
+        on_set_return          = grbl.on_macro_return;
         grbl.on_macro_return   = deferred_set_tool;
         return true;
     }
 
-    return set_tool_write(&data_to_write);
+    return set_tool_write(tool_data);
 }
 
 // ---------------------------------------------------------------------------
@@ -982,14 +995,12 @@ static void ensure_tooltable_exists (void)
         return;
     }
 
-    vfs_mkdir("/linuxcnc");
-
     file = vfs_open(filename, "w");
     if(file) {
         vfs_close(file);
-        report_message("Tooltable: created /linuxcnc/tooltable.tbl", Message_Info);
+        report_message("Tooltable: created /tooltable.tbl", Message_Info);
     } else {
-        report_message("Tooltable: failed to create /linuxcnc/tooltable.tbl", Message_Warning);
+        report_message("Tooltable: failed to create /tooltable.tbl", Message_Warning);
     }
 }
 
