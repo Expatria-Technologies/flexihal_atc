@@ -78,6 +78,10 @@ o110 else
 
   ; ── 5. XY to toolsetter centre ─────────────────────────────────────────────
   G53 G0 X#5381
+  G4 P0
+  M64 P0        ; Activate digital output #0 (toolsetter clear)
+  G4 P0.35      ; Dwell for 350ms
+  M65 P0        ; Deactivate digital output
 
   ; ── 6. Z to approach height ────────────────────────────────────────────────
   G53 G0 Z#5383

@@ -17,14 +17,15 @@
 ;
 ; Unload sequence:  P1 → P2 → P3 [open drawbar] → P4 [close drawbar]
 
+; ── Open carousel ────────────────────────────────────────────────────────────
+G65 P201
+G65 P7 S3 F16 R1 A99
+
 ; ── Move to safe position (P1) ───────────────────────────────────────────────
 G53 G0 Z#4922
 G4P0.5
 G53 G0 X#4920
-
-; ── Open carousel ────────────────────────────────────────────────────────────
-G65 P201
-G65 P7 S3 F16 R1 A99
+G4P0
 
 ; ── Carousel positioning — rotate to outgoing pocket ─────────────────────────
 ; [ADD CAROUSEL ROTATION TO POCKET #4901 HERE]
