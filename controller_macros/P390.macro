@@ -16,15 +16,17 @@
 ;
 ; Load sequence:  P4 [open drawbar] → P3 [close drawbar] → P2 → P1
 
-; ── Move to safe position (P1) ───────────────────────────────────────────────
-G53 G0 Z#4922
-G53 G0 X#4920
 
 ; ── Open carousel (fetch only — already open in fetch+return pair) ────────────
 o100 if [#4906 EQ 0]
   G65 P201
   G65 P7 S3 F16 R1 A99
+  G4 P0
 o100 endif
+
+; ── Move to safe position (P1) ───────────────────────────────────────────────
+G53 G0 Z#4922
+G53 G0 X#4920
 
 ; ── Carousel positioning — rotate to incoming pocket ─────────────────────────
 ; [ADD CAROUSEL ROTATION TO POCKET #4901 HERE]
@@ -52,5 +54,6 @@ G53 G0 X#4920
 ; ── Close carousel ───────────────────────────────────────────────────────────
 G4P0
 G65 P7 S3 F16 R1 A98
+G4 P0
 
 M99
